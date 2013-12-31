@@ -1,0 +1,57 @@
+#!/bin/bash
+
+if [ $# -eq 0 ] || [ $# -gt 2 ]; then
+	echo "Modo de uso: $0 <CMAKE_SOURCE_DIR> [ECLIPSE|CODEBLOCKS|MAKE]"
+	exit 1
+fi
+
+if ! [ -d build ]; then
+	echo "El directorio build no existe, se crea"
+	mkdir build
+fi
+
+SKETCH_DIR=$(readlink -m $1)
+
+if ! [ -d $SKETCH_DIR ]; then
+	echo "El directorio $SKETCH_DIR no existe, imposible continuar"
+	exit 2
+fi
+
+
+CMAKE_GEN="ECLIPSE"
+if [ $# -eq 2 ]; then
+	CMAKE_GEN=$2
+fi
+
+CMAKE_ARGS="-Wno-dev"
+case $CMAKE_GEN in
+ECLIPSE)
+	ENVIRONMENT="Eclipse CDT4 - Unix Makefiles" 
+	CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_ECLIPSE_GENERATE_SOURCE_PROJECT=TRUE -D_ECLIPSE_VERSION=4.3"
+	;;
+MAKE)
+	ENVIRONMENT="Unix Makefiles"
+	;;
+CODEBLOCKS)
+	ENVIRONMENT="CodeBlocks - Unix Makefiles"
+	;;
+*)
+	echo "$1: Opcion inválida"
+	echo "Modo de uso: $0 <CMAKE_SOURCE_DIR> [ECLIPSE|CODEBLOCKS|MAKE]"
+	exit 3
+esac
+
+echo "Construyendo proyecto $SKETCH_DIR para $CMAKE_GEN..."
+
+pushd build
+
+cmake -G"$ENVIRONMENT" $CMAKE_ARGS $SKETCH_DIR
+
+RET=$?
+
+popd
+
+if [ $RET -ne 0 ]; then
+	echo "Error al configurar el proyecto, revisá los logs"
+	exit $RET
+fi
