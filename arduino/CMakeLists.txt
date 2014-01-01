@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 2.8)
 
 project(Bauduino C CXX)
 
+set(ARDUINO_DEBUG False)
 set(ARDUINO_DEFAULT_BOARD nano328)
 set(ARDUINO_DEFAULT_PORT /dev/ttyUSB0)
 
