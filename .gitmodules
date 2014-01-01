@@ -1,6 +1,6 @@
-[submodule "arduino/cmake"]
-	path = arduino/cmake
-	url = https://github.com/queezythegreat/arduino-cmake
 [submodule "arduino/libraries/RTClib"]
 	path = arduino/libraries/RTClib
 	url = git://github.com/adafruit/RTClib.git
+[submodule "arduino/cmake"]
+	path = arduino/cmake
+	url = git@github.com:szaffarano/arduino-cmake.git
