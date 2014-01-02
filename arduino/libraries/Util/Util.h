@@ -56,8 +56,16 @@ private:
 	boolean running;
 public:
 	Log(String name, byte pin);
-	File openForRead();
-	File openForWrite();
+	void open(void (*callback)(File), uint8_t mode = FILE_READ);
+	void remove();
+};
+
+class FileHelper {
+private:
+	File file;
+public:
+	FileHelper(File file);
+	~FileHelper();
 };
 
 #endif /* UTIL_H_ */

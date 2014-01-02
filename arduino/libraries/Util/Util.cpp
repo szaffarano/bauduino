@@ -92,10 +92,20 @@ Log::Log(String name, byte pin) {
 
 }
 
-File Log::openForRead() {
-	return SD.open(this->name.c_str());
+void Log::open(void (*callback)(File), uint8_t mode) {
+	File f = SD.open(this->name.c_str(), mode);
+	FileHelper helper(f); // me aseguro que cierran el archivo en el destructor.
+	callback(f);
 }
 
-File Log::openForWrite() {
-	return SD.open(this->name.c_str(), FILE_WRITE);
+void Log::remove() {
+	SD.remove((char*) this->name.c_str());
+}
+
+FileHelper::FileHelper(File file) {
+	this->file = file;
+}
+
+FileHelper::~FileHelper() {
+	this->file.close();
 }
