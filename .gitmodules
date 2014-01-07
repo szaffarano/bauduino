@@ -4,3 +4,6 @@
 [submodule "arduino/cmake"]
 	path = arduino/cmake
 	url = git@github.com:szaffarano/arduino-cmake.git
+[submodule "arduino/libraries/Bounce"]
+	path = arduino/libraries/Bounce
+	url = git@github.com:thomasfredericks/Bounce-Arduino-Wiring.git
