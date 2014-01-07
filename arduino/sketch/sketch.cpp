@@ -1,7 +1,9 @@
 #include <SoftwareSerial.h>
+#include <SimpleModbusSlave.h>
 #include <Util.h>
+#include <Bounce.h>
 
-#define BLUETOOTH_ENABLED	true
+#define USE_SOFTWARE_SERIAL	false
 
 #define SD_SS				10
 #define	BT_RX				8
@@ -14,28 +16,49 @@
 
 #define	LIGHT				0
 
+enum {
+	PHOTORESISTOR,
+	PUSHBUTTON,
+	TRIAC,
+	DAY,
+	MONTH,
+	YEAR,
+	HOUR,
+	MINUTE,
+	SECOND,
+	HOLDING_REGS_SIZE
+};
+
 #define LOGFILE	"data.log"
 
 Connection* conn;
 RTC* clock;
 Button* button;
 Log* datalog;
+Bounce* but;
+unsigned int holdingRegs[HOLDING_REGS_SIZE];
 
 void setup() {
-	if (BLUETOOTH_ENABLED) {
+	if (USE_SOFTWARE_SERIAL) {
 		SoftwareSerial* ss = new SoftwareSerial(BT_RX, BT_TX);
 		ss->begin(9600);
 		conn = new Connection(ss);
 	} else {
-		Serial.begin(9600);
+		Serial.begin(9600, SERIAL_8N2);
 		conn = new Connection(&Serial);
 	}
 	clock = new RTC();
+	but = new Bounce();
+	but->attach(PUSH);
+	but->interval(5);
 	button = new Button(PUSH);
 	datalog = new Log(LOGFILE, SD_SS);
+
+	modbus_configure(conn->getConnection(), 9600, 0x3, 0, HOLDING_REGS_SIZE,
+			holdingRegs);
 }
 
-void dump_log(File f) {
+void dump_log(File f, void* payload) {
 	Stream* bt = conn->getConnection();
 	bt->println("leyendo archivo...");
 	if (f) {
@@ -50,12 +73,20 @@ void dump_log(File f) {
 	}
 }
 
-void write_log(File f) {
+void log(File f, void* payload) {
+	if (f) {
+		f.println(*((String*) payload));
+	}
+}
+
+void write_log(File f, void* payload) {
 	Stream* bt = conn->getConnection();
 	long start_time = millis();
 	boolean end_loop = false;
 
 	if (f) {
+		String s = *((String*) payload);
+		f.println(s);
 		bt->print("Escriba el contenido, finaliza con '.': ");
 		while (!end_loop) {
 			if (bt->available()) {
@@ -81,10 +112,13 @@ void write_log(File f) {
 	} else {
 		bt->println("Error en la apertura del archivo.");
 	}
+	String s = String("Iniciando aplicacion...");
+	datalog->open(log, &s, FILE_WRITE);
 }
 
-void loop() {
+void menu() {
 	Stream* bt = conn->getConnection();
+	String s = String("escritura");
 
 	if (bt->available()) {
 		char r = bt->read();
@@ -101,10 +135,10 @@ void loop() {
 			bt->println(analogRead(LIGHT));
 			break;
 		case 'w':
-			datalog->open(write_log, FILE_WRITE);
+			datalog->open(write_log, &s, FILE_WRITE);
 			break;
 		case 'r':
-			datalog->open(dump_log);
+			datalog->open(dump_log, NULL);
 			break;
 		default:
 			bt->print("Comando desconocido: ");
@@ -116,6 +150,23 @@ void loop() {
 	if (button->isPressed()) {
 		bt->println(clock->prettyPrint());
 	}
+}
+
+void loop() {
+	int error_count = modbus_update();
+
+	//String s = String("Cantidad de errores: ") + error_count;
+	//datalog->open(log, &s, FILE_WRITE);
+
+	DateTime n = clock->now();
+
+	holdingRegs[PHOTORESISTOR] = analogRead(LIGHT);
+	holdingRegs[DAY] = n.day();
+	holdingRegs[MONTH] = n.month();
+	holdingRegs[YEAR] = n.year();
+	holdingRegs[HOUR] = n.hour();
+	holdingRegs[MINUTE] = n.minute();
+	holdingRegs[SECOND] = n.second();
 
 	delay(100);
 }
