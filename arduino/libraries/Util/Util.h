@@ -48,6 +48,7 @@ private:
 public:
 	RTC();
 	String prettyPrint();
+	DateTime now();
 };
 
 class Log {
@@ -56,7 +57,7 @@ private:
 	boolean running;
 public:
 	Log(String name, byte pin);
-	void open(void (*callback)(File), uint8_t mode = FILE_READ);
+	void open(void (*callback)(File,void*), void* payload, uint8_t mode = FILE_READ);
 	void remove();
 };
 

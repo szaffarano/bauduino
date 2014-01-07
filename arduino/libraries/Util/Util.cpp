@@ -49,6 +49,10 @@ RTC::RTC() {
 	this->rtc->begin();
 }
 
+DateTime RTC::now() {
+	return this->rtc->now();
+}
+
 String RTC::prettyPrint() {
 	String str;
 	DateTime now = this->rtc->now();
@@ -92,10 +96,10 @@ Log::Log(String name, byte pin) {
 
 }
 
-void Log::open(void (*callback)(File), uint8_t mode) {
+void Log::open(void (*callback)(File, void*), void* payload, uint8_t mode) {
 	File f = SD.open(this->name.c_str(), mode);
 	FileHelper helper(f); // me aseguro que cierran el archivo en el destructor.
-	callback(f);
+	callback(f, payload);
 }
 
 void Log::remove() {
