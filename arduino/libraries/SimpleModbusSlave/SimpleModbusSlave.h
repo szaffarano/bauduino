@@ -48,7 +48,30 @@
  http://www.modbus.org/docs/PI_MBUS_300.pdf
  */
 
-#include "Arduino.h"
+#include <Arduino.h>
+
+#define MAX_BUFFER_SIZE 128
+
+typedef struct {
+	unsigned int* regs;
+} state_t;
+
+typedef struct {
+	Stream* port;
+	unsigned char slaveId;
+	unsigned char txEnablePin;
+	unsigned int T1_5; // inter character time out
+	unsigned int T3_5; // frame delay
+	unsigned int holdingRegsSize;
+} config_t;
+
+typedef struct {
+	unsigned char address;
+	unsigned char function;
+	unsigned char data[MAX_BUFFER_SIZE];
+	unsigned int crc;
+	unsigned char length;
+} frame_t;
 
 // function definitions
 unsigned int modbus_update();

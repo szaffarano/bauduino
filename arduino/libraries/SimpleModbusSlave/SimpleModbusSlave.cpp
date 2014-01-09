@@ -1,218 +1,135 @@
-#include "SimpleModbusSlave.h"
+#include <SimpleModbusSlave.h>
+#include <string.h>
 
-#define BUFFER_SIZE 128
+#define JOIN(HIGH, LOW) 	((HIGH << 8) | LOW)
+#define IS_BROADCAST(frame)	frame.address == 0x0
 
-// frame[] is used to recieve and transmit packages. 
-// The maximum serial ring buffer size is 128
-static unsigned char frame[BUFFER_SIZE];
-static unsigned int holdingRegsSize; // size of the register array
-static unsigned int* regs; // user array address
-static unsigned char broadcastFlag;
-static unsigned char slaveID;
-static unsigned char function;
-static unsigned char txEnablePin;
+static config_t config;
+static state_t state;
+
 static unsigned int errorCount;
-static unsigned int T1_5; // inter character time out
-static unsigned int T3_5; // frame delay
-static Stream* modbusPort;
 
 // function definitions
-static void exceptionResponse(unsigned char exception);
-static unsigned int calculateCRC(unsigned char bufferSize);
-static void sendPacket(unsigned char bufferSize);
+static void exceptionResponse(frame_t frame, unsigned char exception);
+static unsigned int calculateCRC(unsigned char* data, unsigned char bufferSize);
+static void sendPacket(unsigned char* data, unsigned char bufferSize);
+static frame_t get_modbus_message();
+static void function0x03(frame_t frame);
+static void function0x10(frame_t frame);
 
-void modbus_configure(Stream *port, long baud, unsigned char _slaveID,
-		unsigned char _txEnablePin, unsigned int _holdingRegsSize,
-		unsigned int* _regs) {
-	modbusPort = port;
-	slaveID = _slaveID;
-	holdingRegsSize = _holdingRegsSize;
-	regs = _regs;
-	txEnablePin = _txEnablePin;
-	pinMode(txEnablePin, OUTPUT);
-	digitalWrite(txEnablePin, LOW);
-	errorCount = 0; // initialize errorCount
+void modbus_configure(Stream *port, long baud, unsigned char slaveId,
+		unsigned char txEnablePin, unsigned int holdingRegsSize,
+		unsigned int* regs) {
 
-	// Modbus states that a baud rate higher than 19200 must use a fixed 750 us 
-	// for inter character time out and 1.75 ms for a frame delay for baud rates
-	// below 19200 the timing is more critical and has to be calculated.
-	// E.g. 9600 baud in a 10 bit packet is 960 characters per second
-	// In milliseconds this will be 960characters per 1000ms. So for 1 character
-	// 1000ms/960characters is 1.04167ms per character and finally modbus states
-	// an inter-character must be 1.5T or 1.5 times longer than a character. Thus
-	// 1.5T = 1.04167ms * 1.5 = 1.5625ms. A frame delay is 3.5T.
+	config.port = port;
+	config.slaveId = slaveId;
+	config.holdingRegsSize = holdingRegsSize;
+	config.txEnablePin = txEnablePin;
+	config.txEnablePin = txEnablePin;
+
+	state.regs = regs;
+
+	pinMode(config.txEnablePin, OUTPUT);
+	digitalWrite(config.txEnablePin, LOW);
+
 	if (baud > 19200) {
-		T1_5 = 750;
-		T3_5 = 1750;
+		config.T1_5 = 750;
+		config.T3_5 = 1750;
 	} else {
-		T1_5 = 15000000 / baud; // 1T * 1.5 = T1.5
-		T3_5 = 35000000 / baud; // 1T * 3.5 = T3.5
+		config.T1_5 = 15000000 / baud; // 1T * 1.5 = T1.5
+		config.T3_5 = 35000000 / baud; // 1T * 3.5 = T3.5
 	}
+
+	errorCount = 0; // initialize errorCount
+}
+
+frame_t get_modbus_message() {
+	frame_t frame;
+
+	unsigned char buffer[MAX_BUFFER_SIZE];
+	unsigned char overflow = 0;
+	unsigned char buffer_size = 0;
+
+	if (config.port->available()) {
+		while (config.port->available()) {
+			if (overflow) {
+				config.port->read();
+			} else {
+				if (buffer_size == MAX_BUFFER_SIZE) {
+					overflow = 1;
+				} else {
+					buffer[buffer_size++] = config.port->read();
+				}
+			}
+			delayMicroseconds(config.T1_5);
+		}
+	}
+
+	frame.address = buffer[0];
+	frame.function = buffer[1];
+	frame.crc = JOIN(buffer[buffer_size - 2], buffer[buffer_size - 1]);
+	memcpy(frame.data, buffer, MAX_BUFFER_SIZE);
+	frame.length = buffer_size;
+
+	return frame;
 }
 
 unsigned int modbus_update() {
-	if ((*modbusPort).available()) {
-		unsigned char buffer = 0;
-		unsigned char overflow = 0;
+	frame_t frame = get_modbus_message();
 
-		while ((*modbusPort).available()) {
-			// The maximum number of bytes is limited to the serial buffer size of 128 bytes
-			// If more bytes is received than the BUFFER_SIZE the overflow flag will be set and the
-			// serial buffer will be red untill all the data is cleared from the receive buffer.
-			if (overflow) {
-				(*modbusPort).read();
-			} else {
-				if (buffer == BUFFER_SIZE) {
-					overflow = 1;
-				}
-				frame[buffer] = (*modbusPort).read();
-				buffer++;
-			}
-			delayMicroseconds(T1_5); // inter character time out
-		}
-
-		// If an overflow occurred increment the errorCount
-		// variable and return to the main sketch without
-		// responding to the request i.e. force a timeout
-		if (overflow) {
-			return errorCount++;
-		}
-
-		// The minimum request packet is 8 bytes for function 3 & 16
-		// @TODO: ver el mínimo para las funciones que se implementen (parametrizar?)
-		if (buffer > 7) {
-			unsigned char id = frame[0];
-
-			broadcastFlag = 0;
-
-			if (id == 0) {
-				broadcastFlag = 1;
-			}
-
-			// if the recieved ID matches the slaveID or broadcasting id (0), continue
-			if (id == slaveID || broadcastFlag) {
-				unsigned int crc =
-						((frame[buffer - 2] << 8) | frame[buffer - 1]); // combine the crc Low & High bytes
-
-				// if the calculated crc matches the recieved crc continue
-				if (calculateCRC(buffer - 2) == crc) {
-					function = frame[1];
-					unsigned int startingAddress = ((frame[2] << 8) | frame[3]); // combine the starting address bytes
-					unsigned int no_of_registers = ((frame[4] << 8) | frame[5]); // combine the number of register bytes
-					unsigned int maxData = startingAddress + no_of_registers;
-					unsigned char index;
-					unsigned char address;
-					unsigned int crc16;
-
-					// broadcasting is not supported for function 3
-					if (!broadcastFlag && (function == 3)) {
-						// check exception 2 ILLEGAL DATA ADDRESS
-						if (startingAddress < holdingRegsSize) {
-							// check exception 3 ILLEGAL DATA VALUE
-							if (maxData <= holdingRegsSize) {
-								unsigned char noOfBytes = no_of_registers * 2;
-								// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
-								//  crcLo, crcHi
-								unsigned char responseFrameSize = 5 + noOfBytes;
-								frame[0] = slaveID;
-								frame[1] = function;
-								frame[2] = noOfBytes;
-								address = 3; // PDU starts at the 4th byte
-								unsigned int temp;
-
-								for (index = startingAddress; index < maxData;
-										index++) {
-									temp = regs[index];
-									frame[address++] = temp >> 8; // split the register into 2 bytes
-									frame[address++] = temp & 0xFF;
-								}
-
-								crc16 = calculateCRC(responseFrameSize - 2);
-								frame[responseFrameSize - 2] = crc16 >> 8; // split crc into 2 bytes
-								frame[responseFrameSize - 1] = crc16 & 0xFF;
-								sendPacket(responseFrameSize);
-							} else {
-								exceptionResponse(3); // exception 3 ILLEGAL DATA VALUE
-							}
-						} else {
-							exceptionResponse(2); // exception 2 ILLEGAL DATA ADDRESS
-						}
-					} else if (function == 16) {
-						// Check if the recieved number of bytes matches the calculated bytes
-						// minus the request bytes.
-						// id + function + (2 * address bytes) + (2 * no of register bytes) +
-						// byte count + (2 * CRC bytes) = 9 bytes
-						if (frame[6] == (buffer - 9)) {
-							// check exception 2 ILLEGAL DATA ADDRESS
-							if (startingAddress < holdingRegsSize) {
-								// check exception 3 ILLEGAL DATA VALUE
-								if (maxData <= holdingRegsSize) {
-									address = 7; // start at the 8th byte in the frame
-
-									for (index = startingAddress;
-											index < maxData; index++) {
-										regs[index] = ((frame[address] << 8)
-												| frame[address + 1]);
-										address += 2;
-									}
-
-									// only the first 6 bytes are used for CRC calculation
-									crc16 = calculateCRC(6);
-									frame[6] = crc16 >> 8; // split crc into 2 bytes
-									frame[7] = crc16 & 0xFF;
-
-									// a function 16 response is an echo of the first 6 bytes from
-									// the request + 2 crc bytes
-									// don't respond if it's a broadcast message
-									if (!broadcastFlag) {
-										sendPacket(8);
-									}
-								} else {
-									exceptionResponse(3); // exception 3 ILLEGAL DATA VALUE
-								}
-							} else {
-								exceptionResponse(2); // exception 2 ILLEGAL DATA ADDRESS
-							}
-						} else {
-							errorCount++; // corrupted packet
-						}
-					} else {
-						exceptionResponse(1); // exception 1 ILLEGAL FUNCTION
-					}
+	// The minimum request packet is 8 bytes for function 3 & 16
+	if (frame.length > 7 && frame.length < MAX_BUFFER_SIZE) {
+		// if the recieved ID matches the slaveID or broadcasting id (0), continue
+		if (frame.address == config.slaveId || IS_BROADCAST(frame)) {
+			// if the calculated crc matches the recieved crc continue
+			if (calculateCRC(frame.data, frame.length - 2) == frame.crc) {
+				// broadcasting is not supported for function 3
+				if (!IS_BROADCAST(frame) && (frame.function == 0x3)) {
+					// modbus function 0x03
+					function0x03(frame);
+				} else if (frame.function == 0x10) {
+					// function 0x10 = 16
+					function0x10(frame);
 				} else {
-					// checksum failed
-					errorCount++;
+					// illegal function
+					exceptionResponse(frame, 0x1); // exception 0x1 ILLEGAL FUNCTION
 				}
-			} // incorrect id
-		} else if (buffer > 0 && buffer < 8) {
-			errorCount++; // corrupted packet
-		}
+			} else {
+				// checksum failed
+				errorCount++;
+			}
+		} // incorrect id
+	} else if (frame.length > 0 && frame.length < 8) {
+		errorCount++; // corrupted packet
 	}
 	return errorCount;
 }
 
-void exceptionResponse(unsigned char exception) {
+void exceptionResponse(frame_t frame, unsigned char exception) {
 	// each call to exceptionResponse() will increment the errorCount
 	errorCount++;
+
+	unsigned char response[5];
+
 	// don't respond if its a broadcast message
-	if (!broadcastFlag) {
-		frame[0] = slaveID;
-		frame[1] = (function | 0x80); // set MSB bit high, informs the master of an exception
-		frame[2] = exception;
-		unsigned int crc16 = calculateCRC(3); // ID, function|0x80, exception code
-		frame[3] = crc16 >> 8;
-		frame[4] = crc16 & 0xFF;
+	if (!IS_BROADCAST(frame)) {
+		response[0] = config.slaveId;
+		response[1] = (frame.function | 0x80); // set MSB bit high, informs the master of an exception
+		response[2] = exception;
+		unsigned int crc16 = calculateCRC(response, 3); // ID, function|0x80, exception code
+		response[3] = crc16 >> 8;
+		response[4] = crc16 & 0xFF;
 		// exception response is always 5 bytes
 		// ID, function + 0x80, exception code, 2 bytes crc
-		sendPacket(5);
+		sendPacket(response, 5);
 	}
 }
 
-unsigned int calculateCRC(unsigned char bufferSize) {
+unsigned int calculateCRC(unsigned char* data, unsigned char size) {
 	unsigned int temp, temp2, flag;
 	temp = 0xFFFF;
-	for (unsigned char i = 0; i < bufferSize; i++) {
-		temp = temp ^ frame[i];
+	for (unsigned char i = 0; i < size; i++) {
+		temp = temp ^ data[i];
 		for (unsigned char j = 1; j <= 8; j++) {
 			flag = temp & 0x0001;
 			temp >>= 1;
@@ -229,16 +146,116 @@ unsigned int calculateCRC(unsigned char bufferSize) {
 	return temp;
 }
 
-void sendPacket(unsigned char bufferSize) {
-	digitalWrite(txEnablePin, HIGH);
+void sendPacket(unsigned char* data, unsigned char bufferSize) {
+	digitalWrite(config.txEnablePin, HIGH);
 
-	for (unsigned char i = 0; i < bufferSize; i++)
-		(*modbusPort).write(frame[i]);
-
-	(*modbusPort).flush();
+	for (unsigned char i = 0; i < bufferSize; i++) {
+		config.port->write(data[i]);
+	}
+	config.port->flush();
 
 	// allow a frame delay to indicate end of transmission
-	delayMicroseconds(T3_5);
+	delayMicroseconds(config.T3_5);
 
-	digitalWrite(txEnablePin, LOW);
+	digitalWrite(config.txEnablePin, LOW);
+}
+
+void function0x03(frame_t frame) {
+
+	unsigned int startingAddress = JOIN(frame.data[2], frame.data[3]); // combine the starting address bytes
+	unsigned int no_of_registers = JOIN(frame.data[4], frame.data[5]); // combine the number of register bytes
+	unsigned int maxData = startingAddress + no_of_registers;
+	unsigned char index;
+	unsigned char address;
+	unsigned int crc16;
+
+	// check exception 2 ILLEGAL DATA ADDRESS
+	if (startingAddress < config.holdingRegsSize) {
+		// check exception 3 ILLEGAL DATA VALUE
+		if (maxData <= config.holdingRegsSize) {
+			unsigned char noOfBytes = no_of_registers * 2;
+
+			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
+			//  crcLo, crcHi
+			unsigned char responseFrameSize = 5 + noOfBytes;
+			unsigned char response[responseFrameSize];
+			response[0] = config.slaveId;
+			response[1] = frame.function;
+			response[2] = noOfBytes;
+			address = 3; // PDU starts at the 4th byte
+			unsigned int temp;
+
+			for (index = startingAddress; index < maxData; index++) {
+				temp = state.regs[index];
+				response[address] = temp >> 8; // split the register into 2 bytes
+				address++;
+				response[address] = temp & 0xFF;
+				address++;
+			}
+
+			crc16 = calculateCRC(response, responseFrameSize - 2);
+			response[responseFrameSize - 2] = crc16 >> 8; // split crc into 2 bytes
+			response[responseFrameSize - 1] = crc16 & 0xFF;
+			sendPacket(response, responseFrameSize);
+		} else
+			exceptionResponse(frame, 3); // exception 3 ILLEGAL DATA VALUE
+	} else {
+		exceptionResponse(frame, 2); // exception 2 ILLEGAL DATA ADDRESS
+	}
+}
+
+void function0x10(frame_t frame) {
+	unsigned int startingAddress = JOIN(frame.data[2], frame.data[3]); // combine the starting address bytes
+	unsigned int no_of_registers = JOIN(frame.data[4], frame.data[5]); // combine the number of register bytes
+	unsigned int maxData = startingAddress + no_of_registers;
+	unsigned char index;
+	unsigned char address;
+	unsigned int crc16;
+
+	// Check if the recieved number of bytes matches the calculated bytes
+	// minus the request bytes.
+	// id + function + (2 * address bytes) + (2 * no of register bytes) +
+	// byte count + (2 * CRC bytes) = 9 bytes
+	if (frame.data[6] == (frame.length - 9)) {
+		// check exception 2 ILLEGAL DATA ADDRESS
+		if (startingAddress < config.holdingRegsSize) {
+			// check exception 3 ILLEGAL DATA VALUE
+			if (maxData <= config.holdingRegsSize) {
+				// start at the 8th byte in the frame
+				address = 7;
+
+				for (index = startingAddress; index < maxData; index++) {
+					state.regs[index] = JOIN(frame.data[address],
+							frame.data[address + 1]);
+					address += 2;
+				}
+
+				// a function 16 response is an echo of the first 6 bytes from
+				// the request + 2 crc bytes
+				unsigned char response[7];
+				response[0] = frame.data[0];
+				response[1] = frame.data[1];
+				response[2] = frame.data[2];
+				response[3] = frame.data[3];
+				response[4] = frame.data[4];
+				response[5] = frame.data[5];
+
+				// only the first 6 bytes are used for CRC calculation
+				crc16 = calculateCRC(frame.data, 6);
+				response[6] = crc16 >> 8; // split crc into 2 bytes
+				response[7] = crc16 & 0xFF;
+
+				// don't respond if it's a broadcast message
+				if (!IS_BROADCAST(frame)) {
+					sendPacket(response, 8);
+				}
+			} else {
+				exceptionResponse(frame, 3); // exception 3 ILLEGAL DATA VALUE
+			}
+		} else {
+			exceptionResponse(frame, 2); // exception 2 ILLEGAL DATA ADDRESS
+		}
+	} else {
+		errorCount++; // corrupted packet
+	}
 }
