@@ -70,6 +70,8 @@ frame_t get_modbus_message() {
 	frame.crc = JOIN(buffer[buffer_size - 2], buffer[buffer_size - 1]);
 	memcpy(frame.data, buffer, MAX_BUFFER_SIZE);
 	frame.length = buffer_size;
+	frame.startingAddress = JOIN(frame.data[2], frame.data[3]); // combine the starting address bytes
+	frame.noOfRegisters = JOIN(frame.data[4], frame.data[5]); // combine the number of register bytes
 
 	return frame;
 }
@@ -162,18 +164,16 @@ void sendPacket(unsigned char* data, unsigned char bufferSize) {
 
 void function0x03(frame_t frame) {
 
-	unsigned int startingAddress = JOIN(frame.data[2], frame.data[3]); // combine the starting address bytes
-	unsigned int no_of_registers = JOIN(frame.data[4], frame.data[5]); // combine the number of register bytes
-	unsigned int maxData = startingAddress + no_of_registers;
+	unsigned int maxData = frame.startingAddress + frame.noOfRegisters;
 	unsigned char index;
 	unsigned char address;
 	unsigned int crc16;
 
 	// check exception 2 ILLEGAL DATA ADDRESS
-	if (startingAddress < config.holdingRegsSize) {
+	if (frame.startingAddress < config.holdingRegsSize) {
 		// check exception 3 ILLEGAL DATA VALUE
 		if (maxData <= config.holdingRegsSize) {
-			unsigned char noOfBytes = no_of_registers * 2;
+			unsigned char noOfBytes = frame.noOfRegisters * 2;
 
 			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
 			//  crcLo, crcHi
@@ -185,7 +185,7 @@ void function0x03(frame_t frame) {
 			address = 3; // PDU starts at the 4th byte
 			unsigned int temp;
 
-			for (index = startingAddress; index < maxData; index++) {
+			for (index = frame.startingAddress; index < maxData; index++) {
 				temp = state.regs[index];
 				response[address] = temp >> 8; // split the register into 2 bytes
 				address++;
@@ -205,9 +205,7 @@ void function0x03(frame_t frame) {
 }
 
 void function0x10(frame_t frame) {
-	unsigned int startingAddress = JOIN(frame.data[2], frame.data[3]); // combine the starting address bytes
-	unsigned int no_of_registers = JOIN(frame.data[4], frame.data[5]); // combine the number of register bytes
-	unsigned int maxData = startingAddress + no_of_registers;
+	unsigned int maxData = frame.startingAddress + frame.noOfRegisters;
 	unsigned char index;
 	unsigned char address;
 	unsigned int crc16;
@@ -218,13 +216,13 @@ void function0x10(frame_t frame) {
 	// byte count + (2 * CRC bytes) = 9 bytes
 	if (frame.data[6] == (frame.length - 9)) {
 		// check exception 2 ILLEGAL DATA ADDRESS
-		if (startingAddress < config.holdingRegsSize) {
+		if (frame.startingAddress < config.holdingRegsSize) {
 			// check exception 3 ILLEGAL DATA VALUE
 			if (maxData <= config.holdingRegsSize) {
 				// start at the 8th byte in the frame
 				address = 7;
 
-				for (index = startingAddress; index < maxData; index++) {
+				for (index = frame.startingAddress; index < maxData; index++) {
 					state.regs[index] = JOIN(frame.data[address],
 							frame.data[address + 1]);
 					address += 2;

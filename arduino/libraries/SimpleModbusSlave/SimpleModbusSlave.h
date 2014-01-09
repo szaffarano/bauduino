@@ -71,6 +71,8 @@ typedef struct {
 	unsigned char data[MAX_BUFFER_SIZE];
 	unsigned int crc;
 	unsigned char length;
+	unsigned int startingAddress;
+	unsigned int noOfRegisters;
 } frame_t;
 
 // function definitions
