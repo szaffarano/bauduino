@@ -47,6 +47,10 @@ RTC::RTC() {
 	this->rtc = new RTC_DS1307();
 	Wire.begin();
 	this->rtc->begin();
+    if (!rtc->isrunning()) {
+            rtc->adjust(DateTime(__DATE__, __TIME__));
+    }
+
 }
 
 DateTime RTC::now() {
