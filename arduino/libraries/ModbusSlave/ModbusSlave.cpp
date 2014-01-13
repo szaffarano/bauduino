@@ -311,11 +311,8 @@ unsigned int Frame::getNoOfRegisters() {
 /* Block implementation */
 ModbusBlock::ModbusBlock(unsigned int size) {
 	this->size = size;
-	//unsigned int b[size];
 	this->block = (unsigned int*)malloc(size);
 	for (int i = 0; i < size; i++) block[i] = 0;
-	//this->block = b;
-	//this->block = new unsigned int[size];
 }
 
 unsigned int ModbusBlock::getSize() {
@@ -327,6 +324,5 @@ unsigned int* ModbusBlock::getBlock() {
 }
 
 ModbusBlock::~ModbusBlock() {
-//	delete[] block;
 	free(this->block);
 }
