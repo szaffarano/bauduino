@@ -37,6 +37,10 @@ logging.info("Getting holding registers with error")
 ex = client.read_holding_registers(address=0, count=20, unit=client_id);
 logging.info("Write registers response with error: %s" % ex)
 
+logging.info("Calling invalid function")
+ex = client.read_coils(address=0, count=20, unit=client_id);
+logging.info("Invalid function response: %s", ex)
+
 logging.info("Getting date and time")
 ex = client.read_holding_registers(address=3, count=6, unit=client_id);
 regs = ex.registers
