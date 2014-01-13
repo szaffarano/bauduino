@@ -23,7 +23,7 @@ Hace falta tener instalado [cmake](http://www.cmake.org/) y la IDE de [Arduino](
 
 Roadmap
 -------
-1. Terminar protocolo de comunicación bluetooth.
+1. Terminar protocolo de comunicación bluetooth. -> implementado parcialmente con Modbus.
 1. Documentar esquemáticos con Kicad.
 1. Agregar sensor de humedad en tierra.
 1. Mejorar algoritmo de riego para tomar en cuenta condiciones de humedad y temperatura.
