@@ -150,9 +150,9 @@ void ModbusSlave::function0x03(Frame frame) {
 	unsigned int crc16;
 
 	// check exception 2 ILLEGAL DATA ADDRESS
-	if (frame.getStartingAddress() < MAX_BUFFER_SIZE) {
+	if (frame.getStartingAddress() < ctx->getHoldingRegisters()->getSize()) {
 		// check exception 3 ILLEGAL DATA VALUE
-		if (maxData <= MAX_BUFFER_SIZE) {
+		if (maxData <= ctx->getHoldingRegisters()->getSize()) {
 			unsigned char noOfBytes = frame.getNoOfRegisters() * 2;
 
 			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
@@ -166,7 +166,7 @@ void ModbusSlave::function0x03(Frame frame) {
 			unsigned int temp;
 
 			for (index = frame.getStartingAddress(); index < maxData; index++) {
-				temp = ctx->getHoldingRegisters()[index];
+				temp = ctx->getHoldingRegisters()->getBlock()[index];
 				response[address] = temp >> 8; // split the register into 2 bytes
 				address++;
 				response[address] = temp & 0xFF;
@@ -197,15 +197,15 @@ void ModbusSlave::function0x10(Frame frame) {
 	// byte count + (2 * CRC bytes) = 9 bytes
 	if (frame.getData()[6] == (frame.getLength() - 9)) {
 		// check exception 2 ILLEGAL DATA ADDRESS
-		if (frame.getStartingAddress() < MAX_BUFFER_SIZE) {
+		if (frame.getStartingAddress() < ctx->getHoldingRegisters()->getSize()) {
 			// check exception 3 ILLEGAL DATA VALUE
-			if (maxData <= MAX_BUFFER_SIZE) {
+			if (maxData <= ctx->getHoldingRegisters()->getSize()) {
 				// start at the 8th byte in the frame
 				address = 7;
 
 				for (index = frame.getStartingAddress(); index < maxData;
 						index++) {
-					ctx->getHoldingRegisters()[index] = JOIN(
+					ctx->getHoldingRegisters()->getBlock()[index] = JOIN(
 							frame.getData()[address],
 							frame.getData()[address + 1]);
 					address += 2;
@@ -242,27 +242,27 @@ void ModbusSlave::function0x10(Frame frame) {
 }
 
 /* Context implementation */
-ModbusContext::ModbusContext(unsigned int* di, unsigned int* ir,
-		unsigned int* hr, unsigned int* c) {
+ModbusContext::ModbusContext(ModbusBlock* di, ModbusBlock* ir, ModbusBlock* hr,
+		ModbusBlock* c) {
 	this->discreteInputs = di;
 	this->inputRegisters = ir;
 	this->holdingRegisters = hr;
 	this->coils = c;
 }
 
-unsigned int* ModbusContext::getDiscreteInputs() {
+ModbusBlock* ModbusContext::getDiscreteInputs() {
 	return this->discreteInputs;
 }
 
-unsigned int* ModbusContext::getInputRegisters() {
+ModbusBlock* ModbusContext::getInputRegisters() {
 	return this->inputRegisters;
 }
 
-unsigned int* ModbusContext::getHoldingRegisters() {
+ModbusBlock* ModbusContext::getHoldingRegisters() {
 	return this->holdingRegisters;
 }
 
-unsigned int* ModbusContext::getCoils() {
+ModbusBlock* ModbusContext::getCoils() {
 	return this->coils;
 }
 
@@ -306,4 +306,27 @@ unsigned int Frame::getStartingAddress() {
 
 unsigned int Frame::getNoOfRegisters() {
 	return this->noOfRegisters;
+}
+
+/* Block implementation */
+ModbusBlock::ModbusBlock(unsigned int size) {
+	this->size = size;
+	//unsigned int b[size];
+	this->block = (unsigned int*)malloc(size);
+	for (int i = 0; i < size; i++) block[i] = 0;
+	//this->block = b;
+	//this->block = new unsigned int[size];
+}
+
+unsigned int ModbusBlock::getSize() {
+	return this->size;
+}
+
+unsigned int* ModbusBlock::getBlock() {
+	return this->block;
+}
+
+ModbusBlock::~ModbusBlock() {
+//	delete[] block;
+	free(this->block);
 }

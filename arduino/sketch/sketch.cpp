@@ -35,8 +35,7 @@ Button* button;
 Log* datalog;
 Bounce* but;
 ModbusSlave* modbus;
-
-unsigned int regs[HOLDING_REGS_SIZE];
+ModbusBlock* regs;
 
 void setup() {
 	// RTC setup
@@ -53,6 +52,7 @@ void setup() {
 
 	// modbus setup
 	Serial.begin(9600, SERIAL_8N2);
+	regs = new ModbusBlock(HOLDING_REGS_SIZE);
 	modbus = new ModbusSlave(&Serial, new ModbusContext(regs, regs, regs, regs),
 			0x3, 0x0, 9600);
 }
@@ -68,13 +68,13 @@ void loop() {
 
 	DateTime n = clock->now();
 
-	regs[PHOTORESISTOR] = analogRead(LIGHT);
-	regs[DAY] = n.day();
-	regs[MONTH] = n.month();
-	regs[YEAR] = n.year();
-	regs[HOUR] = n.hour();
-	regs[MINUTE] = n.minute();
-	regs[SECOND] = n.second();
+	regs->getBlock()[PHOTORESISTOR] = analogRead(LIGHT);
+	regs->getBlock()[DAY] = n.day();
+	regs->getBlock()[MONTH] = n.month();
+	regs->getBlock()[YEAR] = n.year();
+	regs->getBlock()[HOUR] = n.hour();
+	regs->getBlock()[MINUTE] = n.minute();
+	regs->getBlock()[SECOND] = n.second();
 
 	delay(100);
 }

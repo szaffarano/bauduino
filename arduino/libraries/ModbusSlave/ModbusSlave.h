@@ -14,19 +14,29 @@
 
 #define MAX_BUFFER_SIZE 128
 
+class ModbusBlock {
+private:
+	unsigned int size;
+	unsigned int* block;
+public:
+	ModbusBlock(unsigned int size);
+	unsigned int getSize();
+	unsigned int* getBlock();
+	~ModbusBlock();
+};
+
 class ModbusContext {
 private:
-	unsigned int* discreteInputs;
-	unsigned int* inputRegisters;
-	unsigned int* holdingRegisters;
-	unsigned int* coils;
+	ModbusBlock* discreteInputs;
+	ModbusBlock* inputRegisters;
+	ModbusBlock* holdingRegisters;
+	ModbusBlock* coils;
 public:
-	ModbusContext(unsigned int* di, unsigned int* ir, unsigned int* hr,
-			unsigned int* c);
-	unsigned int* getDiscreteInputs();
-	unsigned int* getInputRegisters();
-	unsigned int* getHoldingRegisters();
-	unsigned int* getCoils();
+	ModbusContext(ModbusBlock* di, ModbusBlock* ir, ModbusBlock* hr, ModbusBlock* c);
+	ModbusBlock* getDiscreteInputs();
+	ModbusBlock* getInputRegisters();
+	ModbusBlock* getHoldingRegisters();
+	ModbusBlock* getCoils();
 };
 
 class Frame {
