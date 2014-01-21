@@ -16,10 +16,7 @@ enum {
 	READ_HOLDING_REGISTERS, WRITE_MULTIPLE_REGISTERS, FUNCTIONS_SIZE
 };
 
-ModbusFunction* functions[] = {
-		new ReadHoldingRegisters(),
-		new WriteMultipleRegisters()
-};
+static FunctionRegistry* registry;
 
 /* ################### ModbusSlave implementation ################### */
 ModbusSlave::ModbusSlave(Stream *port, ModbusContext* ctx, unsigned char id,
@@ -40,6 +37,10 @@ ModbusSlave::ModbusSlave(Stream *port, ModbusContext* ctx, unsigned char id,
 		this->interCharTimeout = 15000000 / baud; // 1T * 1.5 = T1.5
 		this->frameDelay = 35000000 / baud; // 1T * 3.5 = T3.5
 	}
+
+	registry = new FunctionRegistry();
+	registry->add(new ReadHoldingRegisters());
+	registry->add(new WriteMultipleRegisters());
 }
 
 ModbusRequest ModbusSlave::readRequest() {
@@ -66,30 +67,35 @@ ModbusRequest ModbusSlave::readRequest() {
 }
 
 void ModbusSlave::update() {
-	ModbusRequest request = readRequest();
+	ModbusRequest req = readRequest();
 	ModbusResponse* response = NULL;
 
 	// The minimum request packet is 8 bytes for function 3 & 16
-	if (request.getLength() > 7 && request.getLength() < MAX_BUFFER_SIZE) {
+	if (req.getLength() > 7 && req.getLength() < MAX_BUFFER_SIZE) {
 		// if the recieved ID matches the slaveID or broadcasting id (0), continue
-		if (request.match(this->id) || request.isBroadcast()) {
+		if (req.match(this->id) || req.isBroadcast()) {
 			// if the calculated crc matches the recieved crc continue
-			if (crc(request.getData(), request.getLength() - 2)
-					== request.getCrc()) {
+			if (crc(req.getData(), req.getLength() - 2) == req.getCrc()) {
 
-				response = new ExceptionResponse(0x1, &request);
-				for (int i = 0; i < FUNCTIONS_SIZE; i++) {
-					ModbusFunction* func = functions[i];
-					if (request.getFunction() == func->id()) {
-						response = func->execute(request, *this);
-						break;
-					}
+				ModbusFunction* func = registry->get(req.getFunction());
+				//unsigned char function = req.getFunction();
+				//for (int i = 0; i < FUNCTIONS_SIZE; i++) {
+					//if (function == functions[i]->id()) {
+						//func = functions[i];
+						//break;
+					//}
+				//}
+
+				if (func != NULL) {
+					response = func->execute(req, *this);
+				} else {
+					response = new ExceptionResponse(0x1, &req);
 				}
 			} else {
 				// checksum failed
 			}
 		} // incorrect id
-	} else if (request.getLength() > 0 && request.getLength() < 8) {
+	} else if (req.getLength() > 0 && req.getLength() < 8) {
 		// corrupted packet
 	}
 
@@ -193,8 +199,9 @@ ModbusRequest::~ModbusRequest() {
 }
 
 /* ################### ReadHoldingRegisters implementation ################### */
-ModbusResponse* ReadHoldingRegisters::execute(ModbusRequest request, ModbusSlave slave) {
-	unsigned int maxData = request.getStartingAddress() + request.getNoOfRegisters();
+ModbusResponse* ReadHoldingRegisters::execute(ModbusRequest req,
+		ModbusSlave slave) {
+	unsigned int maxData = req.getStartingAddress() + req.getNoOfRegisters();
 	unsigned char index;
 	unsigned char address;
 	unsigned int crc16;
@@ -202,29 +209,28 @@ ModbusResponse* ReadHoldingRegisters::execute(ModbusRequest request, ModbusSlave
 	ModbusContext* ctx = slave.getContext();
 	unsigned int id = slave.getId();
 
-	if (request.isBroadcast()) {
+	if (req.isBroadcast()) {
 		// illegal function: 0x03 with broadcasts client
-		return new ExceptionResponse(0x1, &request);
+		return new ExceptionResponse(0x1, &req);
 	}
 
 	// check exception 2 ILLEGAL DATA ADDRESS
-	if (request.getStartingAddress() < ctx->getHoldingRegisters()-> getSize()) {
+	if (req.getStartingAddress() < ctx->getHoldingRegisters()->getSize()) {
 		// check exception 3 ILLEGAL DATA VALUE
 		if (maxData <= ctx->getHoldingRegisters()->getSize()) {
-			unsigned char noOfBytes = request.getNoOfRegisters() * 2;
+			unsigned char noOfBytes = req.getNoOfRegisters() * 2;
 
 			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
 			//  crcLo, crcHi
 			unsigned char responseFrameSize = 5 + noOfBytes;
 			unsigned char response[responseFrameSize];
 			response[0] = id;
-			response[1] = request.getFunction();
+			response[1] = req.getFunction();
 			response[2] = noOfBytes;
 			address = 3; // PDU starts at the 4th byte
 			unsigned int temp;
 
-			for (index = request.getStartingAddress(); index < maxData;
-					index++) {
+			for (index = req.getStartingAddress(); index < maxData; index++) {
 				temp = ctx->getHoldingRegisters()->getData()[index];
 				response[address] = temp >> 8; // split the register into 2 bytes
 				address++;
@@ -240,10 +246,10 @@ ModbusResponse* ReadHoldingRegisters::execute(ModbusRequest request, ModbusSlave
 			return new SuccessResponse(response, responseFrameSize);
 		} else
 			// exception 3 ILLEGAL DATA VALUE
-			return new ExceptionResponse(0x3, &request);
+			return new ExceptionResponse(0x3, &req);
 	} else {
 		// exception 2 ILLEGAL DATA ADDRESS
-		return new ExceptionResponse(0x2, &request);
+		return new ExceptionResponse(0x2, &req);
 	}
 	return new NullResponse();
 }
@@ -348,7 +354,8 @@ void NullResponse::write(ModbusSlave* slave) {
 }
 
 /* ################### SuccessResponse implementation ################### */
-SuccessResponse::SuccessResponse(unsigned char* buffer, unsigned char bufferSize) {
+SuccessResponse::SuccessResponse(unsigned char* buffer,
+		unsigned char bufferSize) {
 	this->size = bufferSize;
 	memcpy(this->data, buffer, bufferSize);
 }
@@ -380,6 +387,46 @@ void ExceptionResponse::write(ModbusSlave* slave) {
 		sendPackage(slave, response, 5);
 	}
 
+}
+
+/* ################### FunctionRegistry implementation ################### */
+FunctionRegistry::FunctionRegistry(unsigned int initialSize) {
+	this->size = initialSize;
+	this->functions = new ModbusFunction*[size];
+	for (int i = 0; i < size; i++) {
+		this->functions[i] = NULL;
+	}
+	last = -1;
+
+}
+
+ModbusFunction* FunctionRegistry::add(ModbusFunction* func) {
+	if (last + 1 >= this->size) {
+		int newSize = size * 2;
+		ModbusFunction** resized = new ModbusFunction*[newSize];
+		for (int i = 0; i < size; i++) {
+			resized[i] = functions[i];
+		}
+		delete functions;
+		functions = resized;
+		size = newSize;
+	}
+	this->functions[++last] = func;
+
+	return func;
+}
+
+ModbusFunction* FunctionRegistry::get(unsigned char id) {
+	for (int i = 0; i <= last; i++) {
+		if (functions[i]->id() == id) {
+			return functions[i];
+		}
+	}
+	return NULL;
+}
+
+FunctionRegistry::~FunctionRegistry() {
+	delete functions;
 }
 
 /* ################### helper methods implementation ################### */

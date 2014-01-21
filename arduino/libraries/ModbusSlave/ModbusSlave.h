@@ -76,7 +76,8 @@ public:
 
 class ModbusResponse {
 protected:
-	void sendPackage(ModbusSlave* slave, unsigned char* data, unsigned char size);
+	void sendPackage(ModbusSlave* slave, unsigned char* data,
+			unsigned char size);
 public:
 	virtual void write(ModbusSlave* slave) = 0;
 	virtual ~ModbusResponse() {
@@ -91,7 +92,6 @@ public:
 	ExceptionResponse(unsigned char code, ModbusRequest* request);
 	void write(ModbusSlave* slave);
 };
-
 
 class NullResponse: public ModbusResponse {
 public:
@@ -126,6 +126,18 @@ class WriteMultipleRegisters: public ModbusFunction {
 public:
 	ModbusResponse* execute(ModbusRequest request, ModbusSlave slave);
 	unsigned char id();
+};
+
+class FunctionRegistry {
+private:
+	ModbusFunction** functions;
+	int size;
+	int last;
+public:
+	FunctionRegistry(unsigned int initialSize = 5);
+	ModbusFunction* add(ModbusFunction* func);
+	ModbusFunction* get(unsigned char id);
+	~FunctionRegistry();
 };
 
 #endif /* MODBUSSLAVE_H_ */
