@@ -10,36 +10,28 @@
 
 #include <Arduino.h>
 
-#define JOIN(HIGH, LOW) 	((HIGH << 8) | LOW)
-
+#define JOIN(HIGH, LOW)         ((HIGH << 8) | LOW)
 #define MAX_BUFFER_SIZE 128
 
 class ModbusBlock {
 private:
+	unsigned int data[MAX_BUFFER_SIZE];
 	unsigned int size;
-	unsigned int* block;
 public:
-	ModbusBlock(unsigned int size);
+	ModbusBlock(unsigned int size, unsigned int initialValue = 0);
+	unsigned int* getData();
 	unsigned int getSize();
-	unsigned int* getBlock();
-	~ModbusBlock();
 };
 
 class ModbusContext {
 private:
-	ModbusBlock* discreteInputs;
-	ModbusBlock* inputRegisters;
 	ModbusBlock* holdingRegisters;
-	ModbusBlock* coils;
 public:
-	ModbusContext(ModbusBlock* di, ModbusBlock* ir, ModbusBlock* hr, ModbusBlock* c);
-	ModbusBlock* getDiscreteInputs();
-	ModbusBlock* getInputRegisters();
+	void setHoldingRegisters(ModbusBlock* regs);
 	ModbusBlock* getHoldingRegisters();
-	ModbusBlock* getCoils();
 };
 
-class Frame {
+class ModbusRequest {
 private:
 	unsigned int length;
 	unsigned int address;
@@ -49,15 +41,16 @@ private:
 	unsigned int startingAddress;
 	unsigned int noOfRegisters;
 public:
-	Frame(unsigned char buffer[], unsigned int bufferSize);
+	ModbusRequest(unsigned char buffer[], unsigned int bufferSize);
 	unsigned int getLength();
-	unsigned int getAddress();
+	boolean match(unsigned char id);
+	boolean isBroadcast();
 	unsigned char* getData();
 	unsigned int getCrc();
 	unsigned char getFunction();
 	unsigned int getStartingAddress();
 	unsigned int getNoOfRegisters();
-	~Frame();
+	~ModbusRequest();
 };
 
 class ModbusSlave {
@@ -67,21 +60,72 @@ private:
 	unsigned char id;
 	unsigned char txEnablePin;
 	unsigned int interCharTimeout;
-	unsigned int frameDalay;
-	Frame getFrame();
-	boolean isBroadcast(Frame frame);
-	unsigned int crc(unsigned char* buffer, unsigned char bufferSize);
-
-	/* temporal */
-	void exceptionResponse(Frame frame, unsigned char exception);
-	void sendPacket(unsigned char* data, unsigned char bufferSize);
-
-	void function0x03(Frame frame);
-	void function0x10(Frame frame);
+	unsigned int frameDelay;
+protected:
+	ModbusRequest readRequest();
 public:
 	ModbusSlave(Stream *port, ModbusContext* ctx, unsigned char id,
 			unsigned char txEnablePin, long baud);
 	void update();
+	ModbusContext* getContext();
+	unsigned char getId();
+	unsigned char getTxEnablePin();
+	Stream* getPort();
+	unsigned int getFrameDelay();
+};
+
+class ModbusResponse {
+protected:
+	void sendPackage(ModbusSlave* slave, unsigned char* data, unsigned char size);
+public:
+	virtual void write(ModbusSlave* slave) = 0;
+	virtual ~ModbusResponse() {
+	}
+};
+
+class ExceptionResponse: public ModbusResponse {
+private:
+	ModbusRequest* request;
+	unsigned char code;
+public:
+	ExceptionResponse(unsigned char code, ModbusRequest* request);
+	void write(ModbusSlave* slave);
+};
+
+
+class NullResponse: public ModbusResponse {
+public:
+	void write(ModbusSlave* slave);
+};
+
+class SuccessResponse: public ModbusResponse {
+private:
+	unsigned char data[MAX_BUFFER_SIZE];
+	unsigned char size;
+public:
+	SuccessResponse(unsigned char* buffer, unsigned char bufferSize);
+	void write(ModbusSlave* slave);
+};
+
+class ModbusFunction {
+public:
+	virtual ModbusResponse* execute(ModbusRequest request,
+			ModbusSlave slave) = 0;
+	virtual unsigned char id() = 0;
+	virtual ~ModbusFunction() {
+	}
+};
+
+class ReadHoldingRegisters: public ModbusFunction {
+public:
+	ModbusResponse* execute(ModbusRequest request, ModbusSlave slave);
+	unsigned char id();
+};
+
+class WriteMultipleRegisters: public ModbusFunction {
+public:
+	ModbusResponse* execute(ModbusRequest request, ModbusSlave slave);
+	unsigned char id();
 };
 
 #endif /* MODBUSSLAVE_H_ */

@@ -9,6 +9,19 @@
 
 #include <ModbusSlave.h>
 
+/* ################### private helper methods ################### */
+static unsigned int crc(unsigned char* buffer, unsigned char bufferSize);
+
+enum {
+	READ_HOLDING_REGISTERS, WRITE_MULTIPLE_REGISTERS, FUNCTIONS_SIZE
+};
+
+ModbusFunction* functions[] = {
+		new ReadHoldingRegisters(),
+		new WriteMultipleRegisters()
+};
+
+/* ################### ModbusSlave implementation ################### */
 ModbusSlave::ModbusSlave(Stream *port, ModbusContext* ctx, unsigned char id,
 		unsigned char txEnablePin, long baud) {
 
@@ -22,45 +35,14 @@ ModbusSlave::ModbusSlave(Stream *port, ModbusContext* ctx, unsigned char id,
 
 	if (baud > 19200) {
 		this->interCharTimeout = 750;
-		this->frameDalay = 1750;
+		this->frameDelay = 1750;
 	} else {
 		this->interCharTimeout = 15000000 / baud; // 1T * 1.5 = T1.5
-		this->frameDalay = 35000000 / baud; // 1T * 3.5 = T3.5
+		this->frameDelay = 35000000 / baud; // 1T * 3.5 = T3.5
 	}
 }
 
-void ModbusSlave::update() {
-
-	Frame frame = getFrame();
-
-	// The minimum request packet is 8 bytes for function 3 & 16
-	if (frame.getLength() > 7 && frame.getLength() < MAX_BUFFER_SIZE) {
-		// if the recieved ID matches the slaveID or broadcasting id (0), continue
-		if (frame.getAddress() == this->id || isBroadcast(frame)) {
-			// if the calculated crc matches the recieved crc continue
-			if (crc(frame.getData(), frame.getLength() - 2) == frame.getCrc()) {
-				// broadcasting is not supported for function 3
-				if (!isBroadcast(frame) && (frame.getFunction() == 0x3)) {
-					// modbus function 0x03
-					function0x03(frame);
-				} else if (frame.getFunction() == 0x10) {
-					// function 0x10 = 16
-					function0x10(frame);
-				} else {
-					// illegal function
-					exceptionResponse(frame, 0x1); // exception 0x1 ILLEGAL FUNCTION
-				}
-			} else {
-				// checksum failed
-			}
-		} // incorrect id
-	} else if (frame.getLength() > 0 && frame.getLength() < 8) {
-		// corrupted packet
-	}
-
-}
-
-Frame ModbusSlave::getFrame() {
+ModbusRequest ModbusSlave::readRequest() {
 	unsigned char buffer[MAX_BUFFER_SIZE];
 	unsigned char overflow = 0;
 	unsigned char bufferSize = 0;
@@ -80,14 +62,328 @@ Frame ModbusSlave::getFrame() {
 		}
 	}
 
-	return Frame(buffer, bufferSize);
+	return ModbusRequest(buffer, bufferSize);
 }
 
-boolean ModbusSlave::isBroadcast(Frame frame) {
-	return frame.getAddress() == 0x0;
+void ModbusSlave::update() {
+	ModbusRequest request = readRequest();
+	ModbusResponse* response = NULL;
+
+	// The minimum request packet is 8 bytes for function 3 & 16
+	if (request.getLength() > 7 && request.getLength() < MAX_BUFFER_SIZE) {
+		// if the recieved ID matches the slaveID or broadcasting id (0), continue
+		if (request.match(this->id) || request.isBroadcast()) {
+			// if the calculated crc matches the recieved crc continue
+			if (crc(request.getData(), request.getLength() - 2)
+					== request.getCrc()) {
+
+				response = new ExceptionResponse(0x1, &request);
+				for (int i = 0; i < FUNCTIONS_SIZE; i++) {
+					ModbusFunction* func = functions[i];
+					if (request.getFunction() == func->id()) {
+						response = func->execute(request, *this);
+						break;
+					}
+				}
+			} else {
+				// checksum failed
+			}
+		} // incorrect id
+	} else if (request.getLength() > 0 && request.getLength() < 8) {
+		// corrupted packet
+	}
+
+	if (response != NULL) {
+		response->write(this);
+		delete response;
+	}
 }
 
-unsigned int ModbusSlave::crc(unsigned char* buffer, unsigned char bufferSize) {
+ModbusContext* ModbusSlave::getContext() {
+	return ctx;
+}
+
+unsigned char ModbusSlave::getId() {
+	return id;
+}
+
+unsigned char ModbusSlave::getTxEnablePin() {
+	return txEnablePin;
+}
+
+Stream* ModbusSlave::getPort() {
+	return port;
+}
+
+unsigned int ModbusSlave::getFrameDelay() {
+	return frameDelay;
+}
+
+/* ################### ModbusBlock implementation ################### */
+ModbusBlock::ModbusBlock(unsigned int size, unsigned int initialValue) {
+	this->size = size;
+	for (int i = 0; i < size; i++) {
+		this->data[i] = initialValue;
+	}
+}
+
+unsigned int* ModbusBlock::getData() {
+	return this->data;
+}
+
+unsigned int ModbusBlock::getSize() {
+	return this->size;
+}
+
+/* ################### ModbusContext implementation ################### */
+void ModbusContext::setHoldingRegisters(ModbusBlock* regs) {
+	this->holdingRegisters = regs;
+}
+
+ModbusBlock* ModbusContext::getHoldingRegisters() {
+	return this->holdingRegisters;
+}
+
+/* ################### ModbusRequest implementation ################### */
+ModbusRequest::ModbusRequest(unsigned char buffer[], unsigned int bufferSize) {
+	this->length = bufferSize;
+	if (length > 0) {
+		memcpy(this->data, buffer, bufferSize);
+
+		this->address = data[0];
+		this->function = data[1];
+		this->crc = JOIN(data[bufferSize - 2], data[bufferSize - 1]);
+		this->startingAddress = JOIN(data[2], data[3]); // combine the starting address bytes
+		this->noOfRegisters = JOIN(data[4], data[5]); // combine the number of register bytes
+	}
+}
+unsigned int ModbusRequest::getLength() {
+	return length;
+}
+
+boolean ModbusRequest::match(unsigned char id) {
+	return address == id;
+}
+
+boolean ModbusRequest::isBroadcast() {
+	return address == 0x0;
+}
+
+unsigned char* ModbusRequest::getData() {
+	return data;
+}
+
+unsigned int ModbusRequest::getCrc() {
+	return crc;
+}
+
+unsigned char ModbusRequest::getFunction() {
+	return function;
+}
+
+unsigned int ModbusRequest::getStartingAddress() {
+	return startingAddress;
+}
+
+unsigned int ModbusRequest::getNoOfRegisters() {
+	return noOfRegisters;
+}
+
+ModbusRequest::~ModbusRequest() {
+}
+
+/* ################### ReadHoldingRegisters implementation ################### */
+ModbusResponse* ReadHoldingRegisters::execute(ModbusRequest request, ModbusSlave slave) {
+	unsigned int maxData = request.getStartingAddress() + request.getNoOfRegisters();
+	unsigned char index;
+	unsigned char address;
+	unsigned int crc16;
+
+	ModbusContext* ctx = slave.getContext();
+	unsigned int id = slave.getId();
+
+	if (request.isBroadcast()) {
+		// illegal function: 0x03 with broadcasts client
+		return new ExceptionResponse(0x1, &request);
+	}
+
+	// check exception 2 ILLEGAL DATA ADDRESS
+	if (request.getStartingAddress() < ctx->getHoldingRegisters()-> getSize()) {
+		// check exception 3 ILLEGAL DATA VALUE
+		if (maxData <= ctx->getHoldingRegisters()->getSize()) {
+			unsigned char noOfBytes = request.getNoOfRegisters() * 2;
+
+			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
+			//  crcLo, crcHi
+			unsigned char responseFrameSize = 5 + noOfBytes;
+			unsigned char response[responseFrameSize];
+			response[0] = id;
+			response[1] = request.getFunction();
+			response[2] = noOfBytes;
+			address = 3; // PDU starts at the 4th byte
+			unsigned int temp;
+
+			for (index = request.getStartingAddress(); index < maxData;
+					index++) {
+				temp = ctx->getHoldingRegisters()->getData()[index];
+				response[address] = temp >> 8; // split the register into 2 bytes
+				address++;
+				response[address] = temp & 0xFF;
+				address++;
+			}
+
+			crc16 = crc(response, responseFrameSize - 2);
+			response[responseFrameSize - 2] = crc16 >> 8; // split crc into 2 bytes
+			response[responseFrameSize - 1] = crc16 & 0xFF;
+
+			//sendPacket(response, responseFrameSize, slave);
+			return new SuccessResponse(response, responseFrameSize);
+		} else
+			// exception 3 ILLEGAL DATA VALUE
+			return new ExceptionResponse(0x3, &request);
+	} else {
+		// exception 2 ILLEGAL DATA ADDRESS
+		return new ExceptionResponse(0x2, &request);
+	}
+	return new NullResponse();
+}
+
+unsigned char ReadHoldingRegisters::id() {
+	return 0x3;
+}
+
+/* ################### WriteMultipleRegisters implementation ################### */
+ModbusResponse* WriteMultipleRegisters::execute(ModbusRequest request,
+		ModbusSlave slave) {
+
+	unsigned int maxData = request.getStartingAddress()
+			+ request.getNoOfRegisters();
+	unsigned char index;
+	unsigned char address;
+	unsigned int crc16;
+
+	ModbusContext* ctx = slave.getContext();
+
+	// Check if the recieved number of bytes matches the calculated bytes
+	// minus the request bytes.
+	// id + function + (2 * address bytes) + (2 * no of register bytes) +
+	// byte count + (2 * CRC bytes) = 9 bytes
+	if (request.getData()[6] == (request.getLength() - 9)) {
+		// check exception 2 ILLEGAL DATA ADDRESS
+		if (request.getStartingAddress()
+				< ctx->getHoldingRegisters()->getSize()) {
+			// check exception 3 ILLEGAL DATA VALUE
+			if (maxData <= ctx->getHoldingRegisters()->getSize()) {
+				// start at the 8th byte in the frame
+				address = 7;
+
+				for (index = request.getStartingAddress(); index < maxData;
+						index++) {
+					ctx->getHoldingRegisters()->getData()[index] = JOIN(
+							request.getData()[address],
+							request.getData()[address + 1]);
+					address += 2;
+				}
+
+				// a function 16 response is an echo of the first 6 bytes from
+				// the request + 2 crc bytes
+				unsigned char response[7];
+				response[0] = request.getData()[0];
+				response[1] = request.getData()[1];
+				response[2] = request.getData()[2];
+				response[3] = request.getData()[3];
+				response[4] = request.getData()[4];
+				response[5] = request.getData()[5];
+
+				// only the first 6 bytes are used for CRC calculation
+				crc16 = crc(request.getData(), 6);
+				response[6] = crc16 >> 8; // split crc into 2 bytes
+				response[7] = crc16 & 0xFF;
+
+				// don't respond if it's a broadcast message
+				if (!request.isBroadcast()) {
+					// sendPacket(response, 8, slave);
+					return new SuccessResponse(response, 8);
+				}
+			} else {
+				// exception 3 ILLEGAL DATA VALUE
+				return new ExceptionResponse(0x3, &request);
+			}
+		} else {
+			// exception 2 ILLEGAL DATA ADDRESS
+			return new ExceptionResponse(0x2, &request);
+		}
+	} else {
+		// corrupted packet
+	}
+
+	return new NullResponse();
+}
+
+unsigned char WriteMultipleRegisters::id() {
+	return 0x10;
+}
+
+/* ################### ExceptionResponse implementation ################### */
+void ModbusResponse::sendPackage(ModbusSlave* slave, unsigned char* data,
+		unsigned char size) {
+	unsigned char tx = slave->getTxEnablePin();
+	digitalWrite(tx, HIGH);
+
+	Stream* port = slave->getPort();
+	for (unsigned char i = 0; i < size; i++) {
+		port->write(data[i]);
+	}
+	port->flush();
+
+	// allow a frame delay to indicate end of transmission
+	delayMicroseconds(slave->getFrameDelay());
+
+	digitalWrite(tx, LOW);
+
+}
+
+/* ################### NullResponse implementation ################### */
+void NullResponse::write(ModbusSlave* slave) {
+}
+
+/* ################### SuccessResponse implementation ################### */
+SuccessResponse::SuccessResponse(unsigned char* buffer, unsigned char bufferSize) {
+	this->size = bufferSize;
+	memcpy(this->data, buffer, bufferSize);
+}
+
+void SuccessResponse::write(ModbusSlave* slave) {
+	sendPackage(slave, data, size);
+}
+
+/* ################### ExceptionResponse implementation ################### */
+ExceptionResponse::ExceptionResponse(unsigned char code,
+		ModbusRequest* request) {
+	this->code = code;
+	this->request = request;
+}
+
+void ExceptionResponse::write(ModbusSlave* slave) {
+	unsigned char response[5];
+
+	// don't respond if its a broadcast message
+	if (!request->isBroadcast()) {
+		response[0] = slave->getId();
+		response[1] = (request->getFunction() | 0x80); // set MSB bit high, informs the master of an exception
+		response[2] = code;
+		unsigned int crc16 = crc(response, 3); // ID, function|0x80, exception code
+		response[3] = crc16 >> 8;
+		response[4] = crc16 & 0xFF;
+		// exception response is always 5 bytes
+		// ID, function + 0x80, exception code, 2 bytes crc
+		sendPackage(slave, response, 5);
+	}
+
+}
+
+/* ################### helper methods implementation ################### */
+static unsigned int crc(unsigned char* buffer, unsigned char bufferSize) {
 	unsigned int temp, temp2, flag;
 	temp = 0xFFFF;
 	for (unsigned char i = 0; i < bufferSize; i++) {
@@ -108,221 +404,3 @@ unsigned int ModbusSlave::crc(unsigned char* buffer, unsigned char bufferSize) {
 	return temp;
 }
 
-void ModbusSlave::exceptionResponse(Frame frame, unsigned char exception) {
-	unsigned char response[5];
-
-	// don't respond if its a broadcast message
-	if (!isBroadcast(frame)) {
-		response[0] = this->id;
-		response[1] = (frame.getFunction() | 0x80); // set MSB bit high, informs the master of an exception
-		response[2] = exception;
-		unsigned int crc16 = crc(response, 3); // ID, function|0x80, exception code
-		response[3] = crc16 >> 8;
-		response[4] = crc16 & 0xFF;
-		// exception response is always 5 bytes
-		// ID, function + 0x80, exception code, 2 bytes crc
-		sendPacket(response, 5);
-	}
-
-}
-
-void ModbusSlave::sendPacket(unsigned char* data, unsigned char bufferSize) {
-
-	digitalWrite(txEnablePin, HIGH);
-
-	for (unsigned char i = 0; i < bufferSize; i++) {
-		port->write(data[i]);
-	}
-	port->flush();
-
-	// allow a frame delay to indicate end of transmission
-	delayMicroseconds(frameDalay);
-
-	digitalWrite(txEnablePin, LOW);
-}
-
-void ModbusSlave::function0x03(Frame frame) {
-
-	unsigned int maxData = frame.getStartingAddress()
-			+ frame.getNoOfRegisters();
-	unsigned char index;
-	unsigned char address;
-	unsigned int crc16;
-
-	// check exception 2 ILLEGAL DATA ADDRESS
-	if (frame.getStartingAddress() < ctx->getHoldingRegisters()->getSize()) {
-		// check exception 3 ILLEGAL DATA VALUE
-		if (maxData <= ctx->getHoldingRegisters()->getSize()) {
-			unsigned char noOfBytes = frame.getNoOfRegisters() * 2;
-
-			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
-			//  crcLo, crcHi
-			unsigned char responseFrameSize = 5 + noOfBytes;
-			unsigned char response[responseFrameSize];
-			response[0] = id;
-			response[1] = frame.getFunction();
-			response[2] = noOfBytes;
-			address = 3; // PDU starts at the 4th byte
-			unsigned int temp;
-
-			for (index = frame.getStartingAddress(); index < maxData; index++) {
-				temp = ctx->getHoldingRegisters()->getBlock()[index];
-				response[address] = temp >> 8; // split the register into 2 bytes
-				address++;
-				response[address] = temp & 0xFF;
-				address++;
-			}
-
-			crc16 = crc(response, responseFrameSize - 2);
-			response[responseFrameSize - 2] = crc16 >> 8; // split crc into 2 bytes
-			response[responseFrameSize - 1] = crc16 & 0xFF;
-			sendPacket(response, responseFrameSize);
-		} else
-			exceptionResponse(frame, 3); // exception 3 ILLEGAL DATA VALUE
-	} else {
-		exceptionResponse(frame, 2); // exception 2 ILLEGAL DATA ADDRESS
-	}
-}
-
-void ModbusSlave::function0x10(Frame frame) {
-	unsigned int maxData = frame.getStartingAddress()
-			+ frame.getNoOfRegisters();
-	unsigned char index;
-	unsigned char address;
-	unsigned int crc16;
-
-	// Check if the recieved number of bytes matches the calculated bytes
-	// minus the request bytes.
-	// id + function + (2 * address bytes) + (2 * no of register bytes) +
-	// byte count + (2 * CRC bytes) = 9 bytes
-	if (frame.getData()[6] == (frame.getLength() - 9)) {
-		// check exception 2 ILLEGAL DATA ADDRESS
-		if (frame.getStartingAddress() < ctx->getHoldingRegisters()->getSize()) {
-			// check exception 3 ILLEGAL DATA VALUE
-			if (maxData <= ctx->getHoldingRegisters()->getSize()) {
-				// start at the 8th byte in the frame
-				address = 7;
-
-				for (index = frame.getStartingAddress(); index < maxData;
-						index++) {
-					ctx->getHoldingRegisters()->getBlock()[index] = JOIN(
-							frame.getData()[address],
-							frame.getData()[address + 1]);
-					address += 2;
-				}
-
-				// a function 16 response is an echo of the first 6 bytes from
-				// the request + 2 crc bytes
-				unsigned char response[7];
-				response[0] = frame.getData()[0];
-				response[1] = frame.getData()[1];
-				response[2] = frame.getData()[2];
-				response[3] = frame.getData()[3];
-				response[4] = frame.getData()[4];
-				response[5] = frame.getData()[5];
-
-				// only the first 6 bytes are used for CRC calculation
-				crc16 = crc(frame.getData(), 6);
-				response[6] = crc16 >> 8; // split crc into 2 bytes
-				response[7] = crc16 & 0xFF;
-
-				// don't respond if it's a broadcast message
-				if (!isBroadcast(frame)) {
-					sendPacket(response, 8);
-				}
-			} else {
-				exceptionResponse(frame, 3); // exception 3 ILLEGAL DATA VALUE
-			}
-		} else {
-			exceptionResponse(frame, 2); // exception 2 ILLEGAL DATA ADDRESS
-		}
-	} else {
-		// corrupted packet
-	}
-}
-
-/* Context implementation */
-ModbusContext::ModbusContext(ModbusBlock* di, ModbusBlock* ir, ModbusBlock* hr,
-		ModbusBlock* c) {
-	this->discreteInputs = di;
-	this->inputRegisters = ir;
-	this->holdingRegisters = hr;
-	this->coils = c;
-}
-
-ModbusBlock* ModbusContext::getDiscreteInputs() {
-	return this->discreteInputs;
-}
-
-ModbusBlock* ModbusContext::getInputRegisters() {
-	return this->inputRegisters;
-}
-
-ModbusBlock* ModbusContext::getHoldingRegisters() {
-	return this->holdingRegisters;
-}
-
-ModbusBlock* ModbusContext::getCoils() {
-	return this->coils;
-}
-
-/* Frame implementation */
-
-Frame::Frame(unsigned char buffer[], unsigned int bufferSize) {
-	this->length = bufferSize;
-
-	if (length > 0) {
-		memcpy(this->data, buffer, bufferSize);
-		this->address = data[0];
-		this->function = data[1];
-		this->crc = JOIN(data[bufferSize - 2], data[bufferSize - 1]);
-		this->startingAddress = JOIN(data[2], data[3]); // combine the starting address bytes
-		this->noOfRegisters = JOIN(data[4], data[5]); // combine the number of register bytes
-	}
-}
-
-Frame::~Frame() {
-}
-
-unsigned int Frame::getLength() {
-	return this->length;
-}
-unsigned int Frame::getAddress() {
-	return this->address;
-}
-unsigned char* Frame::getData() {
-	return this->data;
-}
-unsigned int Frame::getCrc() {
-	return this->crc;
-}
-unsigned char Frame::getFunction() {
-	return this->function;
-}
-
-unsigned int Frame::getStartingAddress() {
-	return this->startingAddress;
-}
-
-unsigned int Frame::getNoOfRegisters() {
-	return this->noOfRegisters;
-}
-
-/* Block implementation */
-ModbusBlock::ModbusBlock(unsigned int size) {
-	this->size = size;
-	this->block = (unsigned int*)malloc(size);
-	for (int i = 0; i < size; i++) block[i] = 0;
-}
-
-unsigned int ModbusBlock::getSize() {
-	return this->size;
-}
-
-unsigned int* ModbusBlock::getBlock() {
-	return this->block;
-}
-
-ModbusBlock::~ModbusBlock() {
-	free(this->block);
-}
