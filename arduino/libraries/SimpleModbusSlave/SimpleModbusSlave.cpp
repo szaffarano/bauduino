@@ -5,7 +5,7 @@
 #define IS_BROADCAST(frame)	frame.address == 0x0
 
 static config_t config;
-static state_t state;
+static modbus_state_t state;
 
 static unsigned int errorCount;
 
@@ -24,7 +24,6 @@ void modbus_configure(Stream *port, long baud, unsigned char slaveId,
 	config.port = port;
 	config.slaveId = slaveId;
 	config.holdingRegsSize = holdingRegsSize;
-	config.txEnablePin = txEnablePin;
 	config.txEnablePin = txEnablePin;
 
 	state.regs = regs;

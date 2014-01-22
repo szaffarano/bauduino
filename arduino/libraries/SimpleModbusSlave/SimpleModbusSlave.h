@@ -54,7 +54,7 @@
 
 typedef struct {
 	unsigned int* regs;
-} state_t;
+} modbus_state_t;
 
 typedef struct {
 	Stream* port;
