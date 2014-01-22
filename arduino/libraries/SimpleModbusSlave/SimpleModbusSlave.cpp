@@ -4,29 +4,37 @@
 #define JOIN(HIGH, LOW) 	((HIGH << 8) | LOW)
 #define IS_BROADCAST(frame)	frame.address == 0x0
 
-static config_t config;
+static modbus_config_t config;
 static modbus_state_t state;
 
-static unsigned int errorCount;
-
-// function definitions
 static void exceptionResponse(frame_t frame, unsigned char exception);
 static unsigned int calculateCRC(unsigned char* data, unsigned char bufferSize);
 static void sendPacket(unsigned char* data, unsigned char bufferSize);
 static frame_t get_modbus_message();
+
+static function_t* search_function(unsigned char id);
+
 static void function0x03(frame_t frame);
 static void function0x10(frame_t frame);
 
-void modbus_configure(Stream *port, long baud, unsigned char slaveId,
-		unsigned char txEnablePin, unsigned int holdingRegsSize,
-		unsigned int* regs) {
+// id, handler, callback
+function_t functions[] = {
+		{0x03, function0x03, NULL},
+		{0x10, function0x10, NULL},
+};
+
+
+modbus_state_t modbus_configure(Stream *port, long baud, unsigned char slaveId,
+		unsigned char txEnablePin, unsigned int di_size, unsigned int ir_size,
+		unsigned int hr_size, unsigned int co_size) {
 
 	config.port = port;
 	config.slaveId = slaveId;
-	config.holdingRegsSize = holdingRegsSize;
+	config.discreteInputsSize = di_size;
+	config.inputRegistersSize = ir_size;
+	config.holdingRegistersSize = hr_size;
+	config.coilsSize = co_size;
 	config.txEnablePin = txEnablePin;
-
-	state.regs = regs;
 
 	pinMode(config.txEnablePin, OUTPUT);
 	digitalWrite(config.txEnablePin, LOW);
@@ -39,7 +47,24 @@ void modbus_configure(Stream *port, long baud, unsigned char slaveId,
 		config.T3_5 = 35000000 / baud; // 1T * 3.5 = T3.5
 	}
 
-	errorCount = 0; // initialize errorCount
+	state.di = (unsigned int*) malloc(
+			sizeof(unsigned int) * config.discreteInputsSize);
+	state.ir = (unsigned int*) malloc(
+			sizeof(unsigned int) * config.inputRegistersSize);
+	state.hr = (unsigned int*) malloc(
+			sizeof(unsigned int) * config.holdingRegistersSize);
+	state.co = (unsigned int*) malloc(sizeof(unsigned int) * config.coilsSize);
+
+	state.errors = 0;
+
+	return state;
+}
+
+void add_modbus_callback(unsigned char function_id, void (*callback)(frame_t)) {
+	function_t* found = search_function(function_id);
+	if (found != NULL) {
+		found->callback = callback;
+	}
 }
 
 frame_t get_modbus_message() {
@@ -75,7 +100,7 @@ frame_t get_modbus_message() {
 	return frame;
 }
 
-unsigned int modbus_update() {
+void modbus_update() {
 	frame_t frame = get_modbus_message();
 
 	// The minimum request packet is 8 bytes for function 3 & 16
@@ -84,31 +109,28 @@ unsigned int modbus_update() {
 		if (frame.address == config.slaveId || IS_BROADCAST(frame)) {
 			// if the calculated crc matches the recieved crc continue
 			if (calculateCRC(frame.data, frame.length - 2) == frame.crc) {
-				// broadcasting is not supported for function 3
-				if (!IS_BROADCAST(frame) && (frame.function == 0x3)) {
-					// modbus function 0x03
-					function0x03(frame);
-				} else if (frame.function == 0x10) {
-					// function 0x10 = 16
-					function0x10(frame);
+				function_t* found = search_function(frame.function);
+				if (found != NULL) {
+					found->handler(frame);
+					if (found->callback != NULL) {
+						found->callback(frame);
+					}
 				} else {
-					// illegal function
 					exceptionResponse(frame, 0x1); // exception 0x1 ILLEGAL FUNCTION
 				}
 			} else {
 				// checksum failed
-				errorCount++;
+				state.errors++;
 			}
 		} // incorrect id
 	} else if (frame.length > 0 && frame.length < 8) {
-		errorCount++; // corrupted packet
+		state.errors++; // corrupted packet
 	}
-	return errorCount;
 }
 
 void exceptionResponse(frame_t frame, unsigned char exception) {
-	// each call to exceptionResponse() will increment the errorCount
-	errorCount++;
+	// each call to exceptionResponse() will increment state.errors
+	state.errors++;
 
 	unsigned char response[5];
 
@@ -168,10 +190,16 @@ void function0x03(frame_t frame) {
 	unsigned char address;
 	unsigned int crc16;
 
+	// broadcasting is not supported for function 3
+	if (IS_BROADCAST(frame)) {
+		exceptionResponse(frame, 0x1);
+		return;
+	}
+
 	// check exception 2 ILLEGAL DATA ADDRESS
-	if (frame.startingAddress < config.holdingRegsSize) {
+	if (frame.startingAddress < config.holdingRegistersSize) {
 		// check exception 3 ILLEGAL DATA VALUE
-		if (maxData <= config.holdingRegsSize) {
+		if (maxData <= config.holdingRegistersSize) {
 			unsigned char noOfBytes = frame.noOfRegisters * 2;
 
 			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
@@ -185,7 +213,7 @@ void function0x03(frame_t frame) {
 			unsigned int temp;
 
 			for (index = frame.startingAddress; index < maxData; index++) {
-				temp = state.regs[index];
+				temp = state.hr[index];
 				response[address] = temp >> 8; // split the register into 2 bytes
 				address++;
 				response[address] = temp & 0xFF;
@@ -215,21 +243,21 @@ void function0x10(frame_t frame) {
 	// byte count + (2 * CRC bytes) = 9 bytes
 	if (frame.data[6] == (frame.length - 9)) {
 		// check exception 2 ILLEGAL DATA ADDRESS
-		if (frame.startingAddress < config.holdingRegsSize) {
+		if (frame.startingAddress < config.holdingRegistersSize) {
 			// check exception 3 ILLEGAL DATA VALUE
-			if (maxData <= config.holdingRegsSize) {
+			if (maxData <= config.holdingRegistersSize) {
 				// start at the 8th byte in the frame
 				address = 7;
 
 				for (index = frame.startingAddress; index < maxData; index++) {
-					state.regs[index] = JOIN(frame.data[address],
+					state.hr[index] = JOIN(frame.data[address],
 							frame.data[address + 1]);
 					address += 2;
 				}
 
 				// a function 16 response is an echo of the first 6 bytes from
 				// the request + 2 crc bytes
-				unsigned char response[7];
+				unsigned char response[8];
 				response[0] = frame.data[0];
 				response[1] = frame.data[1];
 				response[2] = frame.data[2];
@@ -253,6 +281,16 @@ void function0x10(frame_t frame) {
 			exceptionResponse(frame, 2); // exception 2 ILLEGAL DATA ADDRESS
 		}
 	} else {
-		errorCount++; // corrupted packet
+		state.errors++; // corrupted packet
 	}
+}
+
+static function_t* search_function(unsigned char id) {
+	function_t* found = NULL;
+	for (int i = 0; functions[i].id != 0x0 && found == NULL; i++) {
+		if (functions[i].id == id) {
+			found = &functions[i];
+		}
+	}
+	return found;
 }

@@ -1,2 +1,4 @@
 build
 arduino/.project
+**/.project
+**/.pydevproject

@@ -53,17 +53,34 @@
 #define MAX_BUFFER_SIZE 128
 
 typedef struct {
-	unsigned int* regs;
+	// discrete inputs
+	unsigned int* di;
+
+	// input registers
+	unsigned int* ir;
+
+	// holding registers
+	unsigned int* hr;
+
+	// coils
+	unsigned int* co;
+
+	unsigned int errors;
 } modbus_state_t;
 
 typedef struct {
 	Stream* port;
 	unsigned char slaveId;
 	unsigned char txEnablePin;
+
 	unsigned int T1_5; // inter character time out
 	unsigned int T3_5; // frame delay
-	unsigned int holdingRegsSize;
-} config_t;
+
+	unsigned int discreteInputsSize;
+	unsigned int inputRegistersSize;
+	unsigned int holdingRegistersSize;
+	unsigned int coilsSize;
+} modbus_config_t;
 
 typedef struct {
 	unsigned char address;
@@ -75,10 +92,18 @@ typedef struct {
 	unsigned int noOfRegisters;
 } frame_t;
 
-// function definitions
-unsigned int modbus_update();
-void modbus_configure(Stream* modbusPort, long baud, unsigned char _slaveID,
-		unsigned char _TxEnablePin, unsigned int _holdingRegsSize,
-		unsigned int* _regs);
+typedef void(*handler_func)(frame_t);
 
+typedef struct {
+	unsigned char id;
+	handler_func handler;
+	handler_func callback;
+} function_t;
+
+// function definitions
+void modbus_update();
+modbus_state_t modbus_configure(Stream *port, long baud, unsigned char slaveId,
+		unsigned char txEnablePin, unsigned int di_size, unsigned int ir_size,
+		unsigned int hr_size, unsigned int co_size);
+void add_modbus_callback(unsigned char function_id, void(*callback)(frame_t));
 #endif
