@@ -111,14 +111,14 @@ void blink(int count, int time) {
 void read_holding_callback(frame_t frame) {
 	String str = clock->prettyPrint();
 	str += ": read holding";
-	datalog->log(str);
+	datalog->log(str.c_str());
 	modbus_state.hr[COUNTER1] += 1;
 }
 
 void write_holding_callback(frame_t frame) {
 	String str = clock->prettyPrint();
 	str += ": write holding";
-	datalog->log(str);
+	datalog->log(str.c_str());
 	modbus_state.hr[COUNTER2] += 1;
 }
 
