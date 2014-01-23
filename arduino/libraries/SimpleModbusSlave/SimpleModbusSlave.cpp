@@ -14,13 +14,13 @@ static frame_t get_modbus_message();
 
 static function_t* search_function(unsigned char id);
 
-static void function0x03(frame_t frame);
-static void function0x10(frame_t frame);
+static void readHR(frame_t frame);
+static void writeMR(frame_t frame);
 
 // id, handler, callback
 function_t functions[] = {
-		{0x03, function0x03, NULL},
-		{0x10, function0x10, NULL},
+		{READ_HOLDING_REGISTERS, readHR, NULL},
+		{WRITE_MULTIPLE_REGISTERS, writeMR, NULL},
 };
 
 
@@ -183,7 +183,7 @@ void sendPacket(unsigned char* data, unsigned char bufferSize) {
 	digitalWrite(config.txEnablePin, LOW);
 }
 
-void function0x03(frame_t frame) {
+void readHR(frame_t frame) {
 
 	unsigned int maxData = frame.startingAddress + frame.noOfRegisters;
 	unsigned char index;
@@ -231,7 +231,7 @@ void function0x03(frame_t frame) {
 	}
 }
 
-void function0x10(frame_t frame) {
+void writeMR(frame_t frame) {
 	unsigned int maxData = frame.startingAddress + frame.noOfRegisters;
 	unsigned char index;
 	unsigned char address;

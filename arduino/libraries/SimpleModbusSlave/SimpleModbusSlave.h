@@ -52,6 +52,9 @@
 
 #define MAX_BUFFER_SIZE 128
 
+#define	READ_HOLDING_REGISTERS		0x03
+#define	WRITE_MULTIPLE_REGISTERS	0x10
+
 typedef struct {
 	// discrete inputs
 	unsigned int* di;

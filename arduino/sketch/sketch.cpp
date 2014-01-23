@@ -3,23 +3,35 @@
 #include <Arduino.h>
 #include <Util.h>
 
-#define	RTC_SDA A4
-#define	RTC_SCL A5
+#define PHOTO		A0
 
-#define PHOTO	0
-#define	LIGHT	3
-#define	PUSH	6
-#define	BT_RX	8
-#define	BT_TX	9
-#define SD_SS	10
+#define	RTC_SDA 	A4
+#define	RTC_SCL 	A5
 
-#define LOGFILE	"data.log"
+#define	BT_RX		0
+#define	BT_TX		1
+
+#define	DHT22		2
+
+#define	LIGHT		3
+
+#define	PUSH		6
+
+#define	TRIAC		7
+
+#define SD_SS		10
+#define	SD_MOSI		11
+#define	SD_MISO		12
+#define	SD_SCK		13
+
+
+#define	CLIENT_ID	0x3
 
 enum {
 	LED,
 	PHOTORESISTOR,
-	PUSHBUTTON,
-	COUNTER,
+	COUNTER1,
+	COUNTER2,
 	DAY,
 	MONTH,
 	YEAR,
@@ -34,17 +46,18 @@ Button* button;
 Log* datalog;
 modbus_state_t modbus_state;
 
-void log(const char* str);
-void log_callback(File f, void* payload);
-
 void read_holding_callback(frame_t frame);
 void write_holding_callback(frame_t frame);
 
 void blink(int count, int time);
 
 void setup() {
-
 	Serial.begin(9600, SERIAL_8N2);
+
+	pinMode(SD_SS, OUTPUT);
+	pinMode(LIGHT, OUTPUT);
+
+	blink(7, 90);
 
 	modbus_state = modbus_configure(&Serial, 9600, 0x3, 0x0, 0, 0, HR_SIZE, 0);
 
@@ -56,27 +69,26 @@ void setup() {
 
 	button = new Button(PUSH);
 
-	pinMode(LIGHT, OUTPUT);
+	datalog = new Log("data.log", SD_SS);
 
-	blink(15, 90);
+	datalog->log("Iniciando aplicacion...");
 
-	datalog = new Log(LOGFILE, SD_SS);
-
-	add_modbus_callback(0x03, read_holding_callback);
-	add_modbus_callback(0x10, write_holding_callback);
+	add_modbus_callback(READ_HOLDING_REGISTERS, read_holding_callback);
+	add_modbus_callback(WRITE_MULTIPLE_REGISTERS, write_holding_callback);
 }
 
 void loop() {
 	// read modbus requests
 	modbus_update();
 
-	DateTime n = clock->now();
-
 	// input
 	digitalWrite(LIGHT, modbus_state.hr[LED]);
 
 	// output
 	modbus_state.hr[PHOTORESISTOR] = analogRead(LIGHT);
+
+	DateTime n = clock->now();
+
 	modbus_state.hr[DAY] = n.day();
 	modbus_state.hr[MONTH] = n.month();
 	modbus_state.hr[YEAR] = n.year();
@@ -88,32 +100,25 @@ void loop() {
 }
 
 void blink(int count, int time) {
-  for (int i = 0; i < count; i++) {
-    digitalWrite(LIGHT, HIGH);
-    delay(time);
-    digitalWrite(LIGHT, LOW);
-    delay(time/2);
-  }
-}
-
-void read_holding_callback(frame_t frame) {
-	//log("read holding callback");
-	modbus_state.hr[COUNTER] += 1;
-}
-
-void write_holding_callback(frame_t frame) {
-	//log("write holding callback");
-	modbus_state.hr[COUNTER] += 10;
-}
-
-void log_callback(File f, void* payload) {
-	if (f) {
-		String str = *((String*)payload);
-		f.println(str);
+	for (int i = 0; i < count; i++) {
+		digitalWrite(LIGHT, HIGH);
+		delay(time);
+		digitalWrite(LIGHT, LOW);
+		delay(time / 2);
 	}
 }
 
-void log(const char* str) {
-	String s = String(*str);
-	datalog->open(log_callback, &s);
+void read_holding_callback(frame_t frame) {
+	String str = clock->prettyPrint();
+	str += ": read holding";
+	datalog->log(str);
+	modbus_state.hr[COUNTER1] += 1;
 }
+
+void write_holding_callback(frame_t frame) {
+	String str = clock->prettyPrint();
+	str += ": write holding";
+	datalog->log(str);
+	modbus_state.hr[COUNTER2] += 1;
+}
+

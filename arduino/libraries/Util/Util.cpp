@@ -35,21 +35,13 @@ boolean Button::isPressed() {
 	return buttonState == LOW;
 }
 
-Connection::Connection(Stream* serial) {
-	this->serial = serial;
-}
-
-Stream* Connection::getConnection() {
-	return this->serial;
-}
-
 RTC::RTC() {
 	this->rtc = new RTC_DS1307();
 	Wire.begin();
 	this->rtc->begin();
-    if (!rtc->isrunning()) {
-            rtc->adjust(DateTime(__DATE__, __TIME__));
-    }
+	if (!rtc->isrunning()) {
+		rtc->adjust(DateTime(__DATE__, __TIME__));
+	}
 
 }
 
@@ -92,7 +84,7 @@ String RTC::prettyPrint() {
 	return str;
 }
 
-Log::Log(String name, byte pin) {
+Log::Log(const char* name, byte pin) {
 	this->name = name;
 	pinMode(pin, OUTPUT);
 
@@ -100,14 +92,30 @@ Log::Log(String name, byte pin) {
 
 }
 
+void Log::log(const char* str) {
+	File f = SD.open(this->name, FILE_WRITE);
+	if (f) {
+		f.println(str);
+		f.close();
+	}
+}
+
+void Log::log(String str) {
+	File f = SD.open(this->name, FILE_WRITE);
+	if (f) {
+		f.println(str);
+		f.close();
+	}
+}
+
 void Log::open(void (*callback)(File, void*), void* payload, uint8_t mode) {
-	File f = SD.open(this->name.c_str(), mode);
+	File f = SD.open(this->name, mode);
 	FileHelper helper(f); // me aseguro que cierran el archivo en el destructor.
 	callback(f, payload);
 }
 
 void Log::remove() {
-	SD.remove((char*) this->name.c_str());
+	SD.remove((char*) this->name);
 }
 
 FileHelper::FileHelper(File file) {

@@ -34,14 +34,6 @@ public:
 	boolean isPressed();
 };
 
-class Connection {
-private:
-	Stream* serial;
-public:
-	Connection(Stream* serial);
-	Stream* getConnection();
-};
-
 class RTC {
 private:
 	RTC_DS1307* rtc;
@@ -53,10 +45,12 @@ public:
 
 class Log {
 private:
-	String name;
+	const char* name;
 	boolean running;
 public:
-	Log(String name, byte pin);
+	Log(const char* name, byte pin);
+	void log(const char* str);
+	void log(String str);
 	void open(void (*callback)(File,void*), void* payload, uint8_t mode = FILE_READ);
 	void remove();
 };

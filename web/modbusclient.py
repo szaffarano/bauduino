@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*- 
 
 import logging
 from pymodbus.client.sync import ModbusSerialClient
@@ -23,11 +24,10 @@ modbus_config = {
 client = ModbusSerialClient(**modbus_config)
 client.connect()
 
-count = 0
 while True:
     ex = client.read_holding_registers(address=0, count=10, unit=client_id);
     if ex is not None:
-        logging.info("Holding registers: %s" % ex.registers)
+        logging.debug("Holding registers: %s" % ex.registers)
     else:
         logging.error("Error pidiendo HRs")
         continue
@@ -35,18 +35,14 @@ while True:
     regs = ex.registers
 
     led_value = 0 if regs[0] == 1 else 1
-    count += 1
     
-    regs[2] = count
-    regs[0] = led_value
-    
-    ex = client.write_registers(0, regs, unit=client_id)
+    ex = client.write_registers(0, [led_value], unit=client_id)
     if ex is not None:
         logging.debug("Nuevo valor para el led: %d, respuesta: %s" % (led_value, ex))
     else:
         logging.error("Error seteando led con valor %d" % led_value)
 
-    logging.info("%02d/%02d/%d %02d:%02d:%02d:\tLed %03s, Light: %s ohms, Counter: %d" % (regs[4], regs[5], regs[6], regs[7], regs[8], regs[9], ("ON" if led_value == 1 else "OFF"), regs[1], regs[3]))
+    logging.info("%02d/%02d/%d %02d:%02d:%02d:\tLed %03s, Light: %s ohms, Counter #1: % 4d, Counter #2: % 4d" % (regs[4], regs[5], regs[6], regs[7], regs[8], regs[9], ("ON" if led_value == 1 else "OFF"), regs[1], regs[2], regs[3]))
 
     # testeo errores en invocacion a funcion invalida
     ex = client.read_coils(address=0, count=20, unit=client_id);
@@ -55,5 +51,8 @@ while True:
     else:
         logging.error("Error invocando read_coils con argumentos invalidos")
 
+    # Leo los registros  una vez más para que el contador del callback cuente el doble que
+    # el del callback de write registers
+    client.read_holding_registers(address=0, count=1, unit=client_id);
 
 client.close()
