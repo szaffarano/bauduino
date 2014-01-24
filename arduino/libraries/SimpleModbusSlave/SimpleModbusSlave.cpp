@@ -2,29 +2,29 @@
 #include <string.h>
 
 #define JOIN(HIGH, LOW) 	((HIGH << 8) | LOW)
-#define IS_BROADCAST(frame)	frame.address == 0x0
+#define IS_BROADCAST(adu)	adu.address == 0x0
 
-static modbus_config_t config;
-static modbus_state_t state;
+static modbus_config config;
 
-static void exceptionResponse(frame_t frame, unsigned char exception);
-static unsigned int calculateCRC(unsigned char* data, unsigned char bufferSize);
-static void sendPacket(unsigned char* data, unsigned char bufferSize);
-static frame_t get_modbus_message();
+static void exceptionResponse(ADU adu, unsigned char exception);
+static unsigned int calculateCRC(PDU pdu);
+static void sendPacket(PDU pdu);
+static ADU get_adu();
 
-static function_t* search_function(unsigned char id);
+static modbus_function* search_function(unsigned char id);
 
-static void readHR(frame_t frame);
-static void writeMR(frame_t frame);
+static void readHR(ADU frame);
+static void writeMR(ADU frame);
 
 // id, handler, callback
-function_t functions[] = {
+modbus_function functions[] = {
 		{READ_HOLDING_REGISTERS, readHR, NULL},
 		{WRITE_MULTIPLE_REGISTERS, writeMR, NULL},
+		{0x0, NULL, NULL}
 };
 
 
-modbus_state_t modbus_configure(Stream *port, long baud, unsigned char slaveId,
+modbus_state modbus_configure(Stream *port, long baud, unsigned char slaveId,
 		unsigned char txEnablePin, unsigned int di_size, unsigned int ir_size,
 		unsigned int hr_size, unsigned int co_size) {
 
@@ -47,28 +47,28 @@ modbus_state_t modbus_configure(Stream *port, long baud, unsigned char slaveId,
 		config.T3_5 = 35000000 / baud; // 1T * 3.5 = T3.5
 	}
 
-	state.di = (unsigned int*) malloc(
+	config.state.di = (unsigned int*) malloc(
 			sizeof(unsigned int) * config.discreteInputsSize);
-	state.ir = (unsigned int*) malloc(
+	config.state.ir = (unsigned int*) malloc(
 			sizeof(unsigned int) * config.inputRegistersSize);
-	state.hr = (unsigned int*) malloc(
+	config.state.hr = (unsigned int*) malloc(
 			sizeof(unsigned int) * config.holdingRegistersSize);
-	state.co = (unsigned int*) malloc(sizeof(unsigned int) * config.coilsSize);
+	config.state.co = (unsigned int*) malloc(sizeof(unsigned int) * config.coilsSize);
 
-	state.errors = 0;
+	config.state.errors = 0;
 
-	return state;
+	return config.state;
 }
 
-void add_modbus_callback(unsigned char function_id, void (*callback)(frame_t)) {
-	function_t* found = search_function(function_id);
+void add_modbus_callback(unsigned char function_id, function_handler handler) {
+	modbus_function* found = search_function(function_id);
 	if (found != NULL) {
-		found->callback = callback;
+		found->callback = handler;
 	}
 }
 
-frame_t get_modbus_message() {
-	frame_t frame;
+ADU get_adu() {
+	ADU adu;
 
 	unsigned char buffer[MAX_BUFFER_SIZE];
 	unsigned char overflow = 0;
@@ -89,70 +89,69 @@ frame_t get_modbus_message() {
 		}
 	}
 
-	frame.address = buffer[0];
-	frame.function = buffer[1];
-	frame.crc = JOIN(buffer[buffer_size - 2], buffer[buffer_size - 1]);
-	memcpy(frame.data, buffer, MAX_BUFFER_SIZE);
-	frame.length = buffer_size;
-	frame.startingAddress = JOIN(frame.data[2], frame.data[3]); // combine the starting address bytes
-	frame.noOfRegisters = JOIN(frame.data[4], frame.data[5]); // combine the number of register bytes
+	adu.address = buffer[0];
+	adu.pdu.function = buffer[1];
+	adu.crc = JOIN(buffer[buffer_size - 2], buffer[buffer_size - 1]);
+	memcpy(adu.pdu.data, buffer, MAX_BUFFER_SIZE);
+	adu.pdu.length = buffer_size;
 
-	return frame;
+	return adu;
 }
 
 void modbus_update() {
-	frame_t frame = get_modbus_message();
+	ADU adu = get_adu();
 
 	// The minimum request packet is 8 bytes for function 3 & 16
-	if (frame.length > 7 && frame.length < MAX_BUFFER_SIZE) {
+	if (adu.pdu.length > 7 && adu.pdu.length < MAX_BUFFER_SIZE) {
 		// if the recieved ID matches the slaveID or broadcasting id (0), continue
-		if (frame.address == config.slaveId || IS_BROADCAST(frame)) {
+		if (adu.address == config.slaveId || IS_BROADCAST(adu)) {
 			// if the calculated crc matches the recieved crc continue
-			if (calculateCRC(frame.data, frame.length - 2) == frame.crc) {
-				function_t* found = search_function(frame.function);
+			if (calculateCRC(adu.pdu) == adu.crc) {
+				modbus_function* found = search_function(adu.pdu.function);
 				if (found != NULL) {
-					found->handler(frame);
+					found->handler(adu);
 					if (found->callback != NULL) {
-						found->callback(frame);
+						found->callback(adu);
 					}
 				} else {
-					exceptionResponse(frame, 0x1); // exception 0x1 ILLEGAL FUNCTION
+					exceptionResponse(adu, ILLEGAL_FUNCTION);
 				}
 			} else {
 				// checksum failed
-				state.errors++;
+				config.state.errors++;
 			}
 		} // incorrect id
-	} else if (frame.length > 0 && frame.length < 8) {
-		state.errors++; // corrupted packet
+	} else if (adu.pdu.length > 0 && adu.pdu.length < 8) {
+		config.state.errors++; // corrupted packet
 	}
 }
 
-void exceptionResponse(frame_t frame, unsigned char exception) {
+void exceptionResponse(ADU adu, unsigned char exception) {
 	// each call to exceptionResponse() will increment state.errors
-	state.errors++;
+	config.state.errors++;
 
-	unsigned char response[5];
+	PDU pdu;
+	pdu.length = 5;
 
 	// don't respond if its a broadcast message
-	if (!IS_BROADCAST(frame)) {
-		response[0] = config.slaveId;
-		response[1] = (frame.function | 0x80); // set MSB bit high, informs the master of an exception
-		response[2] = exception;
-		unsigned int crc16 = calculateCRC(response, 3); // ID, function|0x80, exception code
-		response[3] = crc16 >> 8;
-		response[4] = crc16 & 0xFF;
+	if (!IS_BROADCAST(adu)) {
+		pdu.data[0] = config.slaveId;
+		pdu.data[1] = (adu.pdu.function | 0x80); // set MSB bit high, informs the master of an exception
+		pdu.data[2] = exception;
+		unsigned int crc16 = calculateCRC(pdu); // ID, function|0x80, exception code
+		pdu.data[3] = crc16 >> 8;
+		pdu.data[4] = crc16 & 0xFF;
 		// exception response is always 5 bytes
 		// ID, function + 0x80, exception code, 2 bytes crc
-		sendPacket(response, 5);
+		sendPacket(pdu);
 	}
 }
 
-unsigned int calculateCRC(unsigned char* data, unsigned char size) {
+unsigned int calculateCRC(PDU pdu) {
 	unsigned int temp, temp2, flag;
 	temp = 0xFFFF;
-	for (unsigned char i = 0; i < size; i++) {
-		temp = temp ^ data[i];
+	for (unsigned char i = 0; i < (pdu.length-2); i++) {
+		temp = temp ^ pdu.data[i];
 		for (unsigned char j = 1; j <= 8; j++) {
 			flag = temp & 0x0001;
 			temp >>= 1;
@@ -169,11 +168,11 @@ unsigned int calculateCRC(unsigned char* data, unsigned char size) {
 	return temp;
 }
 
-void sendPacket(unsigned char* data, unsigned char bufferSize) {
+void sendPacket(PDU pdu) {
 	digitalWrite(config.txEnablePin, HIGH);
 
-	for (unsigned char i = 0; i < bufferSize; i++) {
-		config.port->write(data[i]);
+	for (unsigned char i = 0; i < pdu.length; i++) {
+		config.port->write(pdu.data[i]);
 	}
 	config.port->flush();
 
@@ -183,56 +182,62 @@ void sendPacket(unsigned char* data, unsigned char bufferSize) {
 	digitalWrite(config.txEnablePin, LOW);
 }
 
-void readHR(frame_t frame) {
+void readHR(ADU adu) {
+	unsigned int startingAddress = JOIN(adu.pdu.data[2], adu.pdu.data[3]);
+	unsigned int noOfRegisters = JOIN(adu.pdu.data[4], adu.pdu.data[5]);
 
-	unsigned int maxData = frame.startingAddress + frame.noOfRegisters;
+	unsigned int maxData = startingAddress + noOfRegisters;
 	unsigned char index;
 	unsigned char address;
 	unsigned int crc16;
 
 	// broadcasting is not supported for function 3
-	if (IS_BROADCAST(frame)) {
-		exceptionResponse(frame, 0x1);
+	if (IS_BROADCAST(adu)) {
+		exceptionResponse(adu, ILLEGAL_FUNCTION);
 		return;
 	}
 
 	// check exception 2 ILLEGAL DATA ADDRESS
-	if (frame.startingAddress < config.holdingRegistersSize) {
+	if (startingAddress < config.holdingRegistersSize) {
 		// check exception 3 ILLEGAL DATA VALUE
 		if (maxData <= config.holdingRegistersSize) {
-			unsigned char noOfBytes = frame.noOfRegisters * 2;
+			unsigned char noOfBytes = noOfRegisters * 2;
 
 			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
 			//  crcLo, crcHi
-			unsigned char responseFrameSize = 5 + noOfBytes;
-			unsigned char response[responseFrameSize];
-			response[0] = config.slaveId;
-			response[1] = frame.function;
-			response[2] = noOfBytes;
+			PDU pdu;
+			pdu.length = 5 + noOfBytes;
+
+			pdu.data[0] = config.slaveId;
+			pdu.data[1] = adu.pdu.function;
+			pdu.data[2] = noOfBytes;
 			address = 3; // PDU starts at the 4th byte
 			unsigned int temp;
 
-			for (index = frame.startingAddress; index < maxData; index++) {
-				temp = state.hr[index];
-				response[address] = temp >> 8; // split the register into 2 bytes
+			for (index = startingAddress; index < maxData; index++) {
+				temp = config.state.hr[index];
+				pdu.data[address] = temp >> 8; // split the register into 2 bytes
 				address++;
-				response[address] = temp & 0xFF;
+				pdu.data[address] = temp & 0xFF;
 				address++;
 			}
 
-			crc16 = calculateCRC(response, responseFrameSize - 2);
-			response[responseFrameSize - 2] = crc16 >> 8; // split crc into 2 bytes
-			response[responseFrameSize - 1] = crc16 & 0xFF;
-			sendPacket(response, responseFrameSize);
+			crc16 = calculateCRC(pdu);
+			pdu.data[pdu.length - 2] = crc16 >> 8; // split crc into 2 bytes
+			pdu.data[pdu.length - 1] = crc16 & 0xFF;
+			sendPacket(pdu);
 		} else
-			exceptionResponse(frame, 3); // exception 3 ILLEGAL DATA VALUE
+			exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
 	} else {
-		exceptionResponse(frame, 2); // exception 2 ILLEGAL DATA ADDRESS
+		exceptionResponse(adu, ILLEGAL_DATA_ADDRESS); // exception 2 ILLEGAL DATA ADDRESS
 	}
 }
 
-void writeMR(frame_t frame) {
-	unsigned int maxData = frame.startingAddress + frame.noOfRegisters;
+void writeMR(ADU adu) {
+	unsigned int startingAddress = JOIN(adu.pdu.data[2], adu.pdu.data[3]);
+	unsigned int noOfRegisters = JOIN(adu.pdu.data[4], adu.pdu.data[5]);
+
+	unsigned int maxData = startingAddress + noOfRegisters;
 	unsigned char index;
 	unsigned char address;
 	unsigned int crc16;
@@ -241,52 +246,54 @@ void writeMR(frame_t frame) {
 	// minus the request bytes.
 	// id + function + (2 * address bytes) + (2 * no of register bytes) +
 	// byte count + (2 * CRC bytes) = 9 bytes
-	if (frame.data[6] == (frame.length - 9)) {
+	if (adu.pdu.data[6] == (adu.pdu.length - 9)) {
 		// check exception 2 ILLEGAL DATA ADDRESS
-		if (frame.startingAddress < config.holdingRegistersSize) {
+		if (startingAddress < config.holdingRegistersSize) {
 			// check exception 3 ILLEGAL DATA VALUE
 			if (maxData <= config.holdingRegistersSize) {
 				// start at the 8th byte in the frame
 				address = 7;
 
-				for (index = frame.startingAddress; index < maxData; index++) {
-					state.hr[index] = JOIN(frame.data[address],
-							frame.data[address + 1]);
+				for (index = startingAddress; index < maxData; index++) {
+					config.state.hr[index] = JOIN(adu.pdu.data[address],
+							adu.pdu.data[address + 1]);
 					address += 2;
 				}
 
 				// a function 16 response is an echo of the first 6 bytes from
 				// the request + 2 crc bytes
-				unsigned char response[8];
-				response[0] = frame.data[0];
-				response[1] = frame.data[1];
-				response[2] = frame.data[2];
-				response[3] = frame.data[3];
-				response[4] = frame.data[4];
-				response[5] = frame.data[5];
+				PDU pdu;
+				pdu.length = 8;
+
+				pdu.data[0] = adu.pdu.data[0];
+				pdu.data[1] = adu.pdu.data[1];
+				pdu.data[2] = adu.pdu.data[2];
+				pdu.data[3] = adu.pdu.data[3];
+				pdu.data[4] = adu.pdu.data[4];
+				pdu.data[5] = adu.pdu.data[5];
 
 				// only the first 6 bytes are used for CRC calculation
-				crc16 = calculateCRC(frame.data, 6);
-				response[6] = crc16 >> 8; // split crc into 2 bytes
-				response[7] = crc16 & 0xFF;
+				crc16 = calculateCRC(pdu);
+				pdu.data[6] = crc16 >> 8; // split crc into 2 bytes
+				pdu.data[7] = crc16 & 0xFF;
 
 				// don't respond if it's a broadcast message
-				if (!IS_BROADCAST(frame)) {
-					sendPacket(response, 8);
+				if (!IS_BROADCAST(adu)) {
+					sendPacket(pdu);
 				}
 			} else {
-				exceptionResponse(frame, 3); // exception 3 ILLEGAL DATA VALUE
+				exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
 			}
 		} else {
-			exceptionResponse(frame, 2); // exception 2 ILLEGAL DATA ADDRESS
+			exceptionResponse(adu, ILLEGAL_DATA_ADDRESS); // exception 2 ILLEGAL DATA ADDRESS
 		}
 	} else {
-		state.errors++; // corrupted packet
+		config.state.errors++; // corrupted packet
 	}
 }
 
-static function_t* search_function(unsigned char id) {
-	function_t* found = NULL;
+static modbus_function* search_function(unsigned char id) {
+	modbus_function* found = NULL;
 	for (int i = 0; functions[i].id != 0x0 && found == NULL; i++) {
 		if (functions[i].id == id) {
 			found = &functions[i];

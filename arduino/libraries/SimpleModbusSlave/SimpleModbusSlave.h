@@ -49,27 +49,40 @@
  */
 
 #include <Arduino.h>
+#include <ModbusConstants.h>
 
-#define MAX_BUFFER_SIZE 128
-
-#define	READ_HOLDING_REGISTERS		0x03
-#define	WRITE_MULTIPLE_REGISTERS	0x10
-
+/**
+ * PDU: Modbus Protocol Data Unit
+ */
 typedef struct {
-	// discrete inputs
+	unsigned char function;
+	unsigned char data[MAX_BUFFER_SIZE]; // @TODO: cuando se estabilice, usar puntero y alocar lo que hace falta
+	unsigned int length;
+} PDU;
+
+/**
+ * ADU: Modbus Application Data Unit
+ */
+typedef struct {
+	unsigned char address;
+	PDU pdu;
+	unsigned int crc;
+} ADU;
+
+/**
+ * Modbus Data Model:
+ * 	Discrete inputs (di): single bits, read only.
+ * 	Coils (co): single bits, read/write.
+ * 	Input Registers (ir): 16-bit words, read only.
+ * 	Holding Registers (hr): 16-bit word, read/write.
+ */
+typedef struct {
 	unsigned int* di;
-
-	// input registers
-	unsigned int* ir;
-
-	// holding registers
-	unsigned int* hr;
-
-	// coils
 	unsigned int* co;
-
+	unsigned int* ir;
+	unsigned int* hr;
 	unsigned int errors;
-} modbus_state_t;
+} modbus_state;
 
 typedef struct {
 	Stream* port;
@@ -83,30 +96,23 @@ typedef struct {
 	unsigned int inputRegistersSize;
 	unsigned int holdingRegistersSize;
 	unsigned int coilsSize;
-} modbus_config_t;
 
-typedef struct {
-	unsigned char address;
-	unsigned char function;
-	unsigned char data[MAX_BUFFER_SIZE];
-	unsigned int crc;
-	unsigned char length;
-	unsigned int startingAddress;
-	unsigned int noOfRegisters;
-} frame_t;
+	modbus_state state;
+} modbus_config;
 
-typedef void(*handler_func)(frame_t);
+typedef void (*function_handler)(ADU);
 
 typedef struct {
 	unsigned char id;
-	handler_func handler;
-	handler_func callback;
-} function_t;
+	function_handler handler;
+	function_handler callback;
+} modbus_function;
 
 // function definitions
 void modbus_update();
-modbus_state_t modbus_configure(Stream *port, long baud, unsigned char slaveId,
+modbus_state modbus_configure(Stream *port, long baud, unsigned char slaveId,
 		unsigned char txEnablePin, unsigned int di_size, unsigned int ir_size,
 		unsigned int hr_size, unsigned int co_size);
-void add_modbus_callback(unsigned char function_id, void(*callback)(frame_t));
+void add_modbus_callback(unsigned char function_id, function_handler);
+
 #endif

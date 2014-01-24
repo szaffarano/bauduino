@@ -44,10 +44,10 @@ enum {
 RTC* clock;
 Button* button;
 Log* datalog;
-modbus_state_t modbus_state;
+modbus_state state;
 
-void read_holding_callback(frame_t frame);
-void write_holding_callback(frame_t frame);
+void read_holding_callback(ADU adu);
+void write_holding_callback(ADU adu);
 
 void blink(int count, int time);
 
@@ -59,10 +59,10 @@ void setup() {
 
 	blink(7, 90);
 
-	modbus_state = modbus_configure(&Serial, 9600, 0x3, 0x0, 0, 0, HR_SIZE, 0);
+	state = modbus_configure(&Serial, 9600, 0x3, 0x0, 0, 0, HR_SIZE, 0);
 
 	for (int i = 0; i < HR_SIZE; i++) {
-		modbus_state.hr[i] = 0;
+		state.hr[i] = 0;
 	}
 
 	clock = new RTC();
@@ -82,19 +82,19 @@ void loop() {
 	modbus_update();
 
 	// input
-	digitalWrite(LIGHT, modbus_state.hr[LED]);
+	digitalWrite(LIGHT, state.hr[LED]);
 
 	// output
-	modbus_state.hr[PHOTORESISTOR] = analogRead(LIGHT);
+	state.hr[PHOTORESISTOR] = analogRead(LIGHT);
 
 	DateTime n = clock->now();
 
-	modbus_state.hr[DAY] = n.day();
-	modbus_state.hr[MONTH] = n.month();
-	modbus_state.hr[YEAR] = n.year();
-	modbus_state.hr[HOUR] = n.hour();
-	modbus_state.hr[MINUTE] = n.minute();
-	modbus_state.hr[SECOND] = n.second();
+	state.hr[DAY] = n.day();
+	state.hr[MONTH] = n.month();
+	state.hr[YEAR] = n.year();
+	state.hr[HOUR] = n.hour();
+	state.hr[MINUTE] = n.minute();
+	state.hr[SECOND] = n.second();
 
 	delay(100);
 }
@@ -108,17 +108,17 @@ void blink(int count, int time) {
 	}
 }
 
-void read_holding_callback(frame_t frame) {
+void read_holding_callback(ADU adu) {
 	String str = clock->prettyPrint();
 	str += ": read holding";
 	datalog->log(str.c_str());
-	modbus_state.hr[COUNTER1] += 1;
+	state.hr[COUNTER1] += 1;
 }
 
-void write_holding_callback(frame_t frame) {
+void write_holding_callback(ADU adu) {
 	String str = clock->prettyPrint();
 	str += ": write holding";
 	datalog->log(str.c_str());
-	modbus_state.hr[COUNTER2] += 1;
+	state.hr[COUNTER2] += 1;
 }
 
