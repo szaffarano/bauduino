@@ -136,8 +136,12 @@ void exceptionResponse(ADU adu, unsigned char exception) {
 	if (!IS_BROADCAST(adu)) {
 		ADU response = create_response(5);
 
+		response.address = context.slaveId;
+		response.pdu.function = (adu.pdu.function | 0x80); // set MSB bit high, informs the master of an exception
+
 		response.pdu.data[0] = context.slaveId;
-		response.pdu.data[1] = (adu.pdu.function | 0x80); // set MSB bit high, informs the master of an exception
+		response.pdu.data[1] = (adu.pdu.function | 0x80);
+
 		response.pdu.data[2] = exception;
 		unsigned int crc16 = crc(response); // ID, function|0x80, exception code
 		response.pdu.data[3] = crc16 >> 8;
@@ -149,11 +153,22 @@ void exceptionResponse(ADU adu, unsigned char exception) {
 
 }
 
+/**
+ * ADU: address + function + data + crc
+ */
 unsigned int crc(ADU adu) {
 	unsigned int temp, temp2, flag;
+	unsigned char data[adu.pdu.length - 2];
+
+	data[0] = adu.address;
+	data[1] = adu.pdu.function;
+
+	for (int i = 2; i < adu.pdu.length - 2; i++) {
+		data[i] = adu.pdu.data[i];
+	}
 	temp = 0xFFFF;
 	for (unsigned char i = 0; i < (adu.pdu.length - 2); i++) {
-		temp = temp ^ adu.pdu.data[i];
+		temp = temp ^ data[i];
 		for (unsigned char j = 1; j <= 8; j++) {
 			flag = temp & 0x0001;
 			temp >>= 1;
@@ -209,8 +224,12 @@ void read_hr(ADU adu) {
 			//  crcLo, crcHi
 			ADU response = create_response(5 + noOfBytes);
 
+			response.address = context.slaveId;
+			response.pdu.function = adu.pdu.function;
+
 			response.pdu.data[0] = context.slaveId;
 			response.pdu.data[1] = adu.pdu.function;
+
 			response.pdu.data[2] = noOfBytes;
 			address = 3; // PDU starts at the 4th byte
 			unsigned int temp;
@@ -266,6 +285,9 @@ void write_mr(ADU adu) {
 					// a function 16 response is an echo of the first 6 bytes from
 					// the request + 2 crc bytes
 					ADU response = create_response(8);
+
+					response.address = adu.address;
+					response.pdu.function = adu.pdu.function;
 
 					response.pdu.data[0] = adu.pdu.data[0];
 					response.pdu.data[1] = adu.pdu.data[1];
