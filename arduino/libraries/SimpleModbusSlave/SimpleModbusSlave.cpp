@@ -7,8 +7,8 @@
 static modbus_context context;
 
 static void exceptionResponse(ADU adu, unsigned char exception);
-static unsigned int calculateCRC(PDU pdu);
-static void sendPacket(PDU pdu);
+static unsigned int calculateCRC(ADU adu);
+static void sendPacket(ADU adu);
 static ADU get_adu();
 static PDU create_pdu(unsigned int length);
 
@@ -107,7 +107,7 @@ void modbus_update() {
 		// if the recieved ID matches the slaveID or broadcasting id (0), continue
 		if (adu.address == context.slaveId || IS_BROADCAST(adu)) {
 			// if the calculated crc matches the recieved crc continue
-			if (calculateCRC(adu.pdu) == adu.crc) {
+			if (calculateCRC(adu) == adu.crc) {
 				modbus_function* found = search_function(adu.pdu.function);
 				if (found != NULL) {
 					found->handler(adu);
@@ -133,26 +133,27 @@ void exceptionResponse(ADU adu, unsigned char exception) {
 
 	// don't respond if its a broadcast message
 	if (!IS_BROADCAST(adu)) {
-		PDU pdu = create_pdu(5);
+		ADU response;
+		response.pdu = create_pdu(5);
 
-		pdu.data[0] = context.slaveId;
-		pdu.data[1] = (adu.pdu.function | 0x80); // set MSB bit high, informs the master of an exception
-		pdu.data[2] = exception;
-		unsigned int crc16 = calculateCRC(pdu); // ID, function|0x80, exception code
-		pdu.data[3] = crc16 >> 8;
-		pdu.data[4] = crc16 & 0xFF;
+		response.pdu.data[0] = context.slaveId;
+		response.pdu.data[1] = (adu.pdu.function | 0x80); // set MSB bit high, informs the master of an exception
+		response.pdu.data[2] = exception;
+		unsigned int crc16 = calculateCRC(response); // ID, function|0x80, exception code
+		response.pdu.data[3] = crc16 >> 8;
+		response.pdu.data[4] = crc16 & 0xFF;
 		// exception response is always 5 bytes
 		// ID, function + 0x80, exception code, 2 bytes crc
-		sendPacket(pdu);
+		sendPacket(response);
 	}
 
 }
 
-unsigned int calculateCRC(PDU pdu) {
+unsigned int calculateCRC(ADU adu) {
 	unsigned int temp, temp2, flag;
 	temp = 0xFFFF;
-	for (unsigned char i = 0; i < (pdu.length - 2); i++) {
-		temp = temp ^ pdu.data[i];
+	for (unsigned char i = 0; i < (adu.pdu.length - 2); i++) {
+		temp = temp ^ adu.pdu.data[i];
 		for (unsigned char j = 1; j <= 8; j++) {
 			flag = temp & 0x0001;
 			temp >>= 1;
@@ -169,11 +170,11 @@ unsigned int calculateCRC(PDU pdu) {
 	return temp;
 }
 
-void sendPacket(PDU pdu) {
+void sendPacket(ADU adu) {
 	digitalWrite(context.txEnablePin, HIGH);
 
-	for (unsigned char i = 0; i < pdu.length; i++) {
-		context.port->write(pdu.data[i]);
+	for (unsigned char i = 0; i < adu.pdu.length; i++) {
+		context.port->write(adu.pdu.data[i]);
 	}
 	context.port->flush();
 
@@ -206,26 +207,27 @@ void readHR(ADU adu) {
 
 			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
 			//  crcLo, crcHi
-			PDU pdu = create_pdu(5 + noOfBytes);
+			ADU response;
+			response.pdu = create_pdu(5 + noOfBytes);
 
-			pdu.data[0] = context.slaveId;
-			pdu.data[1] = adu.pdu.function;
-			pdu.data[2] = noOfBytes;
+			response.pdu.data[0] = context.slaveId;
+			response.pdu.data[1] = adu.pdu.function;
+			response.pdu.data[2] = noOfBytes;
 			address = 3; // PDU starts at the 4th byte
 			unsigned int temp;
 
 			for (index = startingAddress; index < maxData; index++) {
 				temp = context.state.hr[index];
-				pdu.data[address] = temp >> 8; // split the register into 2 bytes
+				response.pdu.data[address] = temp >> 8; // split the register into 2 bytes
 				address++;
-				pdu.data[address] = temp & 0xFF;
+				response.pdu.data[address] = temp & 0xFF;
 				address++;
 			}
 
-			crc16 = calculateCRC(pdu);
-			pdu.data[pdu.length - 2] = crc16 >> 8; // split crc into 2 bytes
-			pdu.data[pdu.length - 1] = crc16 & 0xFF;
-			sendPacket(pdu);
+			crc16 = calculateCRC(response);
+			response.pdu.data[response.pdu.length - 2] = crc16 >> 8; // split crc into 2 bytes
+			response.pdu.data[response.pdu.length - 1] = crc16 & 0xFF;
+			sendPacket(response);
 		} else
 			exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
 	} else {
@@ -264,21 +266,22 @@ void writeMR(ADU adu) {
 				if (!IS_BROADCAST(adu)) {
 					// a function 16 response is an echo of the first 6 bytes from
 					// the request + 2 crc bytes
-					PDU pdu = create_pdu(8);
+					ADU response;
+					response.pdu = create_pdu(8);
 
-					pdu.data[0] = adu.pdu.data[0];
-					pdu.data[1] = adu.pdu.data[1];
-					pdu.data[2] = adu.pdu.data[2];
-					pdu.data[3] = adu.pdu.data[3];
-					pdu.data[4] = adu.pdu.data[4];
-					pdu.data[5] = adu.pdu.data[5];
+					response.pdu.data[0] = adu.pdu.data[0];
+					response.pdu.data[1] = adu.pdu.data[1];
+					response.pdu.data[2] = adu.pdu.data[2];
+					response.pdu.data[3] = adu.pdu.data[3];
+					response.pdu.data[4] = adu.pdu.data[4];
+					response.pdu.data[5] = adu.pdu.data[5];
 
 					// only the first 6 bytes are used for CRC calculation
-					crc16 = calculateCRC(pdu);
-					pdu.data[6] = crc16 >> 8; // split crc into 2 bytes
-					pdu.data[7] = crc16 & 0xFF;
+					crc16 = calculateCRC(response);
+					response.pdu.data[6] = crc16 >> 8; // split crc into 2 bytes
+					response.pdu.data[7] = crc16 & 0xFF;
 
-					sendPacket(pdu);
+					sendPacket(response);
 				}
 			} else {
 				exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
