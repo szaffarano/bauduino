@@ -56,7 +56,7 @@
  */
 typedef struct {
 	unsigned char function;
-	unsigned char data[MAX_BUFFER_SIZE]; // @TODO: cuando se estabilice, usar puntero y alocar lo que hace falta
+	unsigned char data[MAX_BUFFER_SIZE];
 	unsigned int length;
 } PDU;
 
@@ -98,7 +98,7 @@ typedef struct {
 	unsigned int coilsSize;
 
 	modbus_state state;
-} modbus_config;
+} modbus_context;
 
 typedef void (*function_handler)(ADU);
 
