@@ -7,20 +7,21 @@
 static modbus_context context;
 
 static void exceptionResponse(ADU adu, unsigned char exception);
-static unsigned int calculateCRC(ADU adu);
-static void sendPacket(ADU adu);
-static ADU get_adu();
-static PDU create_pdu(unsigned int length);
+static unsigned int crc(ADU adu);
+static void send(ADU adu);
+
+static ADU read_request();
+static ADU create_response(unsigned int length);
 
 static modbus_function* search_function(unsigned char id);
 
-static void readHR(ADU frame);
-static void writeMR(ADU frame);
+static void read_hr(ADU frame);
+static void write_mr(ADU frame);
 
 // id, handler, callback
 modbus_function functions[] = {
-		{ READ_HOLDING_REGISTERS, readHR, NULL },
-		{ WRITE_MULTIPLE_REGISTERS, writeMR, NULL },
+		{ READ_HOLDING_REGISTERS, read_hr, NULL },
+		{ WRITE_MULTIPLE_REGISTERS, write_mr, NULL },
 		{ 0x0, NULL, NULL }
 };
 
@@ -68,7 +69,7 @@ void add_modbus_callback(unsigned char function_id, function_handler handler) {
 	}
 }
 
-ADU get_adu() {
+ADU read_request() {
 	ADU adu;
 
 	unsigned char buffer[MAX_BUFFER_SIZE];
@@ -100,14 +101,14 @@ ADU get_adu() {
 }
 
 void modbus_update() {
-	ADU adu = get_adu();
+	ADU adu = read_request();
 
 	// The minimum request packet is 8 bytes for function 3 & 16
 	if (adu.pdu.length > 7 && adu.pdu.length < MAX_BUFFER_SIZE) {
 		// if the recieved ID matches the slaveID or broadcasting id (0), continue
 		if (adu.address == context.slaveId || IS_BROADCAST(adu)) {
 			// if the calculated crc matches the recieved crc continue
-			if (calculateCRC(adu) == adu.crc) {
+			if (crc(adu) == adu.crc) {
 				modbus_function* found = search_function(adu.pdu.function);
 				if (found != NULL) {
 					found->handler(adu);
@@ -133,23 +134,22 @@ void exceptionResponse(ADU adu, unsigned char exception) {
 
 	// don't respond if its a broadcast message
 	if (!IS_BROADCAST(adu)) {
-		ADU response;
-		response.pdu = create_pdu(5);
+		ADU response = create_response(5);
 
 		response.pdu.data[0] = context.slaveId;
 		response.pdu.data[1] = (adu.pdu.function | 0x80); // set MSB bit high, informs the master of an exception
 		response.pdu.data[2] = exception;
-		unsigned int crc16 = calculateCRC(response); // ID, function|0x80, exception code
+		unsigned int crc16 = crc(response); // ID, function|0x80, exception code
 		response.pdu.data[3] = crc16 >> 8;
 		response.pdu.data[4] = crc16 & 0xFF;
 		// exception response is always 5 bytes
 		// ID, function + 0x80, exception code, 2 bytes crc
-		sendPacket(response);
+		send(response);
 	}
 
 }
 
-unsigned int calculateCRC(ADU adu) {
+unsigned int crc(ADU adu) {
 	unsigned int temp, temp2, flag;
 	temp = 0xFFFF;
 	for (unsigned char i = 0; i < (adu.pdu.length - 2); i++) {
@@ -170,7 +170,7 @@ unsigned int calculateCRC(ADU adu) {
 	return temp;
 }
 
-void sendPacket(ADU adu) {
+void send(ADU adu) {
 	digitalWrite(context.txEnablePin, HIGH);
 
 	for (unsigned char i = 0; i < adu.pdu.length; i++) {
@@ -184,7 +184,7 @@ void sendPacket(ADU adu) {
 	digitalWrite(context.txEnablePin, LOW);
 }
 
-void readHR(ADU adu) {
+void read_hr(ADU adu) {
 	unsigned int startingAddress = JOIN(adu.pdu.data[2], adu.pdu.data[3]);
 	unsigned int noOfRegisters = JOIN(adu.pdu.data[4], adu.pdu.data[5]);
 
@@ -207,8 +207,7 @@ void readHR(ADU adu) {
 
 			// ID, function, noOfBytes, (dataLo + dataHi)*number of registers,
 			//  crcLo, crcHi
-			ADU response;
-			response.pdu = create_pdu(5 + noOfBytes);
+			ADU response = create_response(5 + noOfBytes);
 
 			response.pdu.data[0] = context.slaveId;
 			response.pdu.data[1] = adu.pdu.function;
@@ -224,10 +223,10 @@ void readHR(ADU adu) {
 				address++;
 			}
 
-			crc16 = calculateCRC(response);
+			crc16 = crc(response);
 			response.pdu.data[response.pdu.length - 2] = crc16 >> 8; // split crc into 2 bytes
 			response.pdu.data[response.pdu.length - 1] = crc16 & 0xFF;
-			sendPacket(response);
+			send(response);
 		} else
 			exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
 	} else {
@@ -235,7 +234,7 @@ void readHR(ADU adu) {
 	}
 }
 
-void writeMR(ADU adu) {
+void write_mr(ADU adu) {
 	unsigned int startingAddress = JOIN(adu.pdu.data[2], adu.pdu.data[3]);
 	unsigned int noOfRegisters = JOIN(adu.pdu.data[4], adu.pdu.data[5]);
 
@@ -266,8 +265,7 @@ void writeMR(ADU adu) {
 				if (!IS_BROADCAST(adu)) {
 					// a function 16 response is an echo of the first 6 bytes from
 					// the request + 2 crc bytes
-					ADU response;
-					response.pdu = create_pdu(8);
+					ADU response = create_response(8);
 
 					response.pdu.data[0] = adu.pdu.data[0];
 					response.pdu.data[1] = adu.pdu.data[1];
@@ -277,11 +275,11 @@ void writeMR(ADU adu) {
 					response.pdu.data[5] = adu.pdu.data[5];
 
 					// only the first 6 bytes are used for CRC calculation
-					crc16 = calculateCRC(response);
+					crc16 = crc(response);
 					response.pdu.data[6] = crc16 >> 8; // split crc into 2 bytes
 					response.pdu.data[7] = crc16 & 0xFF;
 
-					sendPacket(response);
+					send(response);
 				}
 			} else {
 				exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
@@ -304,8 +302,8 @@ static modbus_function* search_function(unsigned char id) {
 	return found;
 }
 
-static PDU create_pdu(unsigned int length) {
-	PDU pdu;
-	pdu.length = length;
-	return pdu;
+static ADU create_response(unsigned int length) {
+	ADU response;
+	response.pdu.length = length;
+	return response;
 }
