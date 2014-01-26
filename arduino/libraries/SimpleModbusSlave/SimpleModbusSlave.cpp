@@ -6,7 +6,7 @@
 
 static modbus_context context;
 
-static void exceptionResponse(ADU adu, unsigned char exception);
+static ADU exceptionResponse(ADU adu, unsigned char exception);
 static unsigned int crc(ADU adu);
 static void send(ADU adu);
 
@@ -116,7 +116,8 @@ void modbus_update() {
 						found->callback(adu);
 					}
 				} else {
-					exceptionResponse(adu, ILLEGAL_FUNCTION);
+					ADU exception = exceptionResponse(adu, ILLEGAL_FUNCTION);
+					send(exception);
 				}
 			} else {
 				// checksum failed
@@ -128,12 +129,12 @@ void modbus_update() {
 	}
 }
 
-void exceptionResponse(ADU adu, unsigned char exception) {
+ADU exceptionResponse(ADU adu, unsigned char exception) {
 	// each call to exceptionResponse() will increment state.errors
 	context.state.errors++;
 
 	// don't respond if its a broadcast message
-	if (!IS_BROADCAST(adu)) {
+	//if (!IS_BROADCAST(adu)) {
 		ADU response = create_response(5);
 
 		response.address = context.slaveId;
@@ -148,8 +149,10 @@ void exceptionResponse(ADU adu, unsigned char exception) {
 		response.pdu.data[4] = crc16 & 0xFF;
 		// exception response is always 5 bytes
 		// ID, function + 0x80, exception code, 2 bytes crc
-		send(response);
-	}
+
+		//send(response);
+	//}
+	return response;
 
 }
 
@@ -210,7 +213,8 @@ void read_hr(ADU adu) {
 
 	// broadcasting is not supported for function 3
 	if (IS_BROADCAST(adu)) {
-		exceptionResponse(adu, ILLEGAL_FUNCTION);
+		ADU exception = exceptionResponse(adu, ILLEGAL_FUNCTION);
+		send(exception);
 		return;
 	}
 
@@ -246,10 +250,13 @@ void read_hr(ADU adu) {
 			response.pdu.data[response.pdu.length - 2] = crc16 >> 8; // split crc into 2 bytes
 			response.pdu.data[response.pdu.length - 1] = crc16 & 0xFF;
 			send(response);
-		} else
-			exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
+		} else {
+			ADU exception = exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
+			send(exception);
+		}
 	} else {
-		exceptionResponse(adu, ILLEGAL_DATA_ADDRESS); // exception 2 ILLEGAL DATA ADDRESS
+		ADU exception = exceptionResponse(adu, ILLEGAL_DATA_ADDRESS); // exception 2 ILLEGAL DATA ADDRESS
+		send(exception);
 	}
 }
 
@@ -304,10 +311,12 @@ void write_mr(ADU adu) {
 					send(response);
 				}
 			} else {
-				exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
+				ADU exception = exceptionResponse(adu, ILLEGAL_DATA_VALUE); // exception 3 ILLEGAL DATA VALUE
+				send(exception);
 			}
 		} else {
-			exceptionResponse(adu, ILLEGAL_DATA_ADDRESS); // exception 2 ILLEGAL DATA ADDRESS
+			ADU exception = exceptionResponse(adu, ILLEGAL_DATA_ADDRESS); // exception 2 ILLEGAL DATA ADDRESS
+			send(exception);
 		}
 	} else {
 		context.state.errors++; // corrupted packet
